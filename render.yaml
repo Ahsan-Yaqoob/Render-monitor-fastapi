@@ -2,12 +2,15 @@ services:
   - type: web
     name: render-monitor-fastapi
     runtime: python
+    pythonVersion: "3.12"
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port 8000
     envVars:
       - key: RENDER_API_KEY
         sync: false
       - key: RENDER_SERVICE_ID
+        sync: false
+      - key: AI_BACKEND_URL
         sync: false
       - key: EMAIL_SENDER
         sync: false
