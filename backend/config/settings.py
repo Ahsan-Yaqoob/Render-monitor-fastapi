@@ -17,11 +17,12 @@ class Settings:
 
     def __init__(self):
         self.RENDER_API_KEY = self._clean(os.getenv('RENDER_API_KEY'))
-        # NOTE: 'RENDER_SERVICE_ID' is a RESERVED built-in var on Render — the platform
-        # auto-injects it set to the *current* service's own id, which would shadow any
-        # custom value. We use MONITOR_SERVICE_ID instead (the id of the service we watch),
-        # falling back to RENDER_SERVICE_ID only for local dev where there's no collision.
-        self.MONITOR_SERVICE_ID = self._clean(os.getenv('MONITOR_SERVICE_ID') or os.getenv('RENDER_SERVICE_ID'))
+        # IMPORTANT: read ONLY MONITOR_SERVICE_ID — never RENDER_SERVICE_ID.
+        # 'RENDER_SERVICE_ID' is a RESERVED built-in var that Render auto-injects on every
+        # service, set to that service's OWN id. Falling back to it would silently read the
+        # monitor's own id instead of the target service. If MONITOR_SERVICE_ID is unset,
+        # validation below fails loudly rather than using a wrong value.
+        self.MONITOR_SERVICE_ID = self._clean(os.getenv('MONITOR_SERVICE_ID'))
         self.AI_BACKEND_URL    = self._clean(os.getenv('AI_BACKEND_URL') or '').rstrip('/')
         self.EMAIL_SENDER = self._clean(os.getenv('EMAIL_SENDER'))
         self.EMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD')  # app passwords may contain spaces — don't strip
