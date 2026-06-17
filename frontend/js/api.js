@@ -28,21 +28,12 @@ class APIClient {
         }
     }
 
-    // ── Single-service endpoints (existing backend) ────────────────────────────
-
     getStatus()                     { return this.request('/status'); }
-    getHistory(limit = 100)         { return this.request(`/history?limit=${limit}`); }
     getHistoryByDays(limit, days)   { return this.request(`/history?limit=${limit}&days=${days}`); }
-    getStats(days = 30)             { return this.request(`/stats?days=${days}`); }
+    getServicesHealth()             { return this.request('/services/health'); }
+    getRenderLogs(limit = 150)      { return this.request(`/render-logs?limit=${limit}`); }
     triggerManualCheck()            { return this.request('/monitor/check', { method: 'POST' }); }
     clearLogs()                     { return this.request('/monitor/clear-logs', { method: 'POST' }); }
-
-    // ── Multi-service endpoints (added once backend is updated) ───────────────
-
-    getServices()                   { return this.request('/services'); }
-    getServiceStatus(id)            { return this.request(`/services/${id}/status`); }
-    getServiceHistory(id, days=90)  { return this.request(`/services/${id}/history?days=${days}`); }
-    getServiceLogs(id, limit=50)    { return this.request(`/services/${id}/logs?limit=${limit}`); }
 }
 
 const api = new APIClient();

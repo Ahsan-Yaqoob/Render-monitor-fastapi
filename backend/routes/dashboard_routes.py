@@ -1,18 +1,22 @@
 from fastapi import APIRouter, Query
 from backend.services.monitor_service import get_monitor_service
-from backend.services.stats_service import StatsService
 from backend.database.csv_handler import CSVHandler
 from backend.config.settings import settings
 from backend.utils.logger import logger
 from backend.utils.helpers import format_duration_readable, time_ago
 from datetime import datetime
-from typing import Optional
+import requests as _requests
+import time as _time
+
+# Server-side cache so we don't hammer the AI backend on every frontend refresh
+_svc_health_cache: dict = {}
+_svc_health_ts: float = 0.0
+_SVC_HEALTH_TTL = 300  # 5 minutes
 
 router = APIRouter(prefix="/api", tags=["dashboard"])
 
 monitor_service = get_monitor_service()
 csv_handler = CSVHandler(settings.CSV_FILE_PATH)
-stats_service = StatsService(csv_handler)
 
 
 @router.get("/status")
@@ -34,7 +38,6 @@ async def get_status():
                 'downtime_minutes': status_snapshot.current_downtime_minutes,
                 'downtime_readable': format_duration_readable(status_snapshot.current_downtime_minutes),
                 'issue_type': status_snapshot.issue_type,
-                'ai_backend_url': settings.AI_BACKEND_URL,
             }
         }
     
@@ -47,7 +50,7 @@ async def get_status():
 
 
 @router.get("/history")
-async def get_history(limit: int = Query(100, ge=1, le=1000), days: int = Query(0, ge=0, le=365)):
+async def get_history(limit: int = Query(100, ge=1, le=5000), days: int = Query(0, ge=0, le=365)):
     """Get all event history."""
     try:
         history = monitor_service.get_history()
@@ -85,110 +88,44 @@ async def get_history(limit: int = Query(100, ge=1, le=1000), days: int = Query(
         }
 
 
-@router.get("/stats")
-async def get_stats(days: int = Query(30, ge=0, le=365)):
-    """Get comprehensive statistics."""
+@router.get("/services/health")
+def get_services_health():
+    """
+    Proxy: fetches per-service health from the AI backend server-to-server.
+    The AI backend URL never reaches the browser — only this monitor backend calls it.
+    Results are cached for 5 minutes to avoid hammering the AI backend.
+    """
+    global _svc_health_cache, _svc_health_ts
+
+    if _svc_health_cache and (_time.monotonic() - _svc_health_ts) < _SVC_HEALTH_TTL:
+        return {**_svc_health_cache, "cached": True}
+
+    ai_url = settings.AI_BACKEND_URL
+    if not ai_url:
+        return {'success': False, 'error': 'AI_BACKEND_URL not configured', 'data': {}}
+
     try:
-        if days == 0:
-            stats = stats_service.get_all_stats()
-        else:
-            stats = stats_service.get_stats_by_period(days=days)
-        
-        return {
-            'success': True,
-            'data': stats.to_dict()
-        }
-    
+        res = _requests.get(f"{ai_url}/api/health/services", timeout=15)
+        res.raise_for_status()
+        data = res.json()
+        _svc_health_cache = data
+        _svc_health_ts = _time.monotonic()
+        logger.info("Fetched per-service health from AI backend")
+        return data
     except Exception as e:
-        logger.error(f"Error getting stats: {str(e)}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
+        logger.error(f"Failed to fetch AI backend health: {e}")
+        return {'success': False, 'error': str(e), 'data': {}}
 
 
-@router.get("/stats/daily-failures")
-async def get_daily_failures(days: int = Query(30, ge=1, le=365)):
-    """Get daily failure counts."""
-    try:
-        daily_failures = stats_service.get_daily_failures(days=days)
-        
-        return {
-            'success': True,
-            'data': daily_failures
-        }
-    
-    except Exception as e:
-        logger.error(f"Error getting daily failures: {str(e)}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
-
-
-@router.get("/stats/issue-frequency")
-async def get_issue_frequency():
-    """Get issue type frequency."""
-    try:
-        issue_freq = stats_service.get_issue_frequency()
-        
-        return {
-            'success': True,
-            'data': issue_freq
-        }
-    
-    except Exception as e:
-        logger.error(f"Error getting issue frequency: {str(e)}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
-
-
-@router.get("/stats/downtime-by-issue")
-async def get_downtime_by_issue():
-    """Get total downtime grouped by issue type."""
-    try:
-        downtime_data = stats_service.get_downtime_by_issue()
-        
-        formatted_data = {
-            issue: format_duration_readable(minutes)
-            for issue, minutes in downtime_data.items()
-        }
-        
-        return {
-            'success': True,
-            'data': formatted_data
-        }
-    
-    except Exception as e:
-        logger.error(f"Error getting downtime by issue: {str(e)}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
-
-
-@router.get("/stats/recovery-time-avg")
-async def get_recovery_time_avg():
-    """Get average recovery time."""
-    try:
-        avg_recovery = stats_service.get_recovery_time_avg()
-        
-        return {
-            'success': True,
-            'data': {
-                'average_recovery_minutes': avg_recovery,
-                'average_recovery_readable': format_duration_readable(avg_recovery)
-            }
-        }
-    
-    except Exception as e:
-        logger.error(f"Error getting recovery time: {str(e)}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
+@router.get("/render-logs")
+def get_render_logs(limit: int = Query(150, ge=1, le=200)):
+    """
+    Return the most recent live server logs, pulled directly from Render's
+    /v1/logs API. Reuses the same 30-second cache the health checker uses,
+    so no extra Render API call is made per dashboard refresh.
+    """
+    logs = monitor_service.render_checker.fetch_logs()
+    return {"success": True, "data": logs[:limit], "total": len(logs), "showing": min(limit, len(logs))}
 
 
 @router.get("/health")

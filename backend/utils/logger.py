@@ -1,25 +1,26 @@
+import io
 import logging
 import os
+import sys
 from datetime import datetime
 
 
 class Logger:
     """Logger utility for the Render Monitor application."""
-    
+
     def __init__(self, name='RenderMonitor'):
         self.logger = logging.getLogger(name)
         self.logger.setLevel(logging.DEBUG)
-        
+
         if not self.logger.handlers:
             formatter = logging.Formatter(
                 '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                 datefmt='%Y-%m-%d %H:%M:%S'
             )
-            
-            import sys
-            console_handler = logging.StreamHandler(
-                stream=open(sys.stdout.fileno(), mode='w', encoding='utf-8', buffering=1)
-            )
+
+            # Force UTF-8 on Windows regardless of terminal code page
+            utf8_stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+            console_handler = logging.StreamHandler(stream=utf8_stdout)
             console_handler.setLevel(logging.INFO)
             console_handler.setFormatter(formatter)
             self.logger.addHandler(console_handler)
@@ -34,7 +35,7 @@ class Logger:
                 f'monitor_{datetime.now().strftime("%Y%m%d")}.log'
             )
             
-            file_handler = logging.FileHandler(log_file)
+            file_handler = logging.FileHandler(log_file, encoding='utf-8')
             file_handler.setLevel(logging.DEBUG)
             file_handler.setFormatter(formatter)
             self.logger.addHandler(file_handler)

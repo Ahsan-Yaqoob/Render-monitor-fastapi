@@ -73,13 +73,11 @@ async def api_info():
         'endpoints': {
             'status': 'GET /api/status',
             'history': 'GET /api/history',
-            'stats': 'GET /api/stats',
-            'daily_failures': 'GET /api/stats/daily-failures',
-            'issue_frequency': 'GET /api/stats/issue-frequency',
-            'downtime_by_issue': 'GET /api/stats/downtime-by-issue',
-            'recovery_time': 'GET /api/stats/recovery-time-avg',
+            'services_health': 'GET /api/services/health',
+            'render_logs': 'GET /api/render-logs',
             'health': 'GET /api/health',
-            'manual_check': 'POST /api/monitor/check'
+            'manual_check': 'POST /api/monitor/check',
+            'clear_logs': 'POST /api/monitor/clear-logs'
         }
     }
 

@@ -9,6 +9,9 @@ from backend.utils.logger import logger
 from backend.utils.helpers import get_current_timestamp, calculate_duration
 from backend.config.settings import settings
 
+# Deploy restarts on Render take ~30–90s. Only log/alert after this grace period.
+GRACE_PERIOD_MINUTES = 2
+
 
 class MonitorService:
     """Core service for monitoring and managing service status."""
@@ -30,8 +33,9 @@ class MonitorService:
         try:
             with open(self.STATE_FILE, 'r') as f:
                 state = json.load(f)
-            # Migrate old state files that lack the recovery_email_sent field
             state.setdefault('recovery_email_sent', False)
+            state.setdefault('failure_confirmed', True)
+            state.setdefault('failure_issue_type', 'NONE')
             return state
         except FileNotFoundError:
             return self._create_default_state()
@@ -48,6 +52,8 @@ class MonitorService:
             'last_recovery_time': None,
             'email_alert_sent': False,
             'recovery_email_sent': False,
+            'failure_confirmed': True,    # True = real outage logged; False = in grace period
+            'failure_issue_type': 'NONE',
         }
 
     def _save_state(self):
@@ -71,34 +77,81 @@ class MonitorService:
 
             logger.info(f"Service check result: running={is_running}, issue={issue_type}")
 
-            previous_state = self.current_state['is_running']
+            previous_running   = self.current_state['is_running']
+            failure_confirmed  = self.current_state.get('failure_confirmed', True)
 
-            if is_running and not previous_state:
-                return self._handle_service_recovery(service_name, current_time)
-
-            elif not is_running and previous_state:
-                return self._handle_service_failure(service_name, current_time, issue_type)
-
-            else:
-                # No state change — update timestamp only
+            if is_running:
+                if not previous_running:
+                    return self._handle_service_recovery(service_name, current_time)
+                # Still running — update timestamp only
                 self.current_state['last_check_time'] = current_time
                 self._save_state()
-                return (False, 'RUNNING' if is_running else 'FAILED')
+                return (False, 'RUNNING')
+
+            # Service is down
+            if previous_running:
+                # First failed check — start grace period, don't log yet
+                return self._start_grace_period(service_name, current_time, issue_type)
+
+            if not failure_confirmed:
+                # Still down during grace period — confirm if grace elapsed
+                return self._evaluate_grace_period(service_name, current_time, issue_type)
+
+            # Already a confirmed outage — update timestamp only
+            self.current_state['last_check_time'] = current_time
+            self._save_state()
+            return (False, 'FAILED')
 
         except Exception as e:
             logger.error(f"Error in check_and_update_status: {e}")
             return (False, self.current_state.get('last_status', 'UNKNOWN'))
 
-    def _handle_service_failure(self, service_name, failure_time, issue_type):
-        """Handle service going down — send DOWN email once."""
-        logger.warning(f"Service DOWN detected at {failure_time}")
+    def _start_grace_period(self, service_name, failure_time, issue_type):
+        """First failure detected — wait GRACE_PERIOD_MINUTES before logging."""
+        logger.warning(
+            f"Service DOWN at {failure_time} — grace period started "
+            f"({GRACE_PERIOD_MINUTES}m before logging)"
+        )
+        self.current_state.update({
+            'is_running':          False,
+            'last_status':         'FAILED',
+            'failure_start_time':  failure_time,
+            'last_check_time':     failure_time,
+            'failure_confirmed':   False,
+            'failure_issue_type':  issue_type,
+            'email_alert_sent':    False,
+            'recovery_email_sent': False,
+        })
+        self._save_state()
+        return (False, 'FAILED')
 
-        self.current_state['is_running'] = False
-        self.current_state['last_status'] = 'FAILED'
-        self.current_state['failure_start_time'] = failure_time
-        self.current_state['last_check_time'] = failure_time
-        self.current_state['email_alert_sent'] = False
-        self.current_state['recovery_email_sent'] = False
+    def _evaluate_grace_period(self, service_name, current_time, issue_type):
+        """Still down — confirm real outage once grace period elapses."""
+        failure_start   = self.current_state.get('failure_start_time')
+        downtime_so_far = calculate_duration(failure_start, current_time) if failure_start else 0
+
+        self.current_state['last_check_time'] = current_time
+
+        if downtime_so_far >= GRACE_PERIOD_MINUTES:
+            logger.warning(
+                f"Grace period expired ({downtime_so_far:.1f}m) — confirming real outage"
+            )
+            return self._confirm_outage(
+                service_name,
+                failure_start or current_time,
+                self.current_state.get('failure_issue_type', issue_type),
+            )
+
+        logger.info(
+            f"Service still down — grace period active "
+            f"({downtime_so_far:.1f}/{GRACE_PERIOD_MINUTES}m)"
+        )
+        self._save_state()
+        return (False, 'FAILED')
+
+    def _confirm_outage(self, service_name, failure_time, issue_type):
+        """Grace period elapsed — log FAILED event and send alert."""
+        self.current_state['failure_confirmed'] = True
 
         record = ServiceStatusRecord(
             id=self.csv_handler.generate_unique_id(),
@@ -111,38 +164,61 @@ class MonitorService:
         )
         self.csv_handler.add_record(record)
 
-        if not self.current_state['email_alert_sent']:
+        if not self.current_state.get('email_alert_sent'):
             if self.email_service.send_service_down_alert(service_name, failure_time, issue_type):
                 self.current_state['email_alert_sent'] = True
                 logger.info("Down alert email sent")
 
         self._save_state()
-        logger.info(f"Service failure recorded: {record.id}")
+        logger.info(f"Real outage confirmed and recorded: {record.id}")
         return (True, 'FAILED')
 
     def _handle_service_recovery(self, service_name, recovery_time):
-        """Handle service coming back up — send RECOVERY email once per outage."""
-        logger.warning(f"Service RECOVERED detected at {recovery_time}")
+        """Handle service coming back up."""
+        failure_confirmed = self.current_state.get('failure_confirmed', True)
 
-        # Guard: only send recovery email once per outage cycle
+        if not failure_confirmed:
+            # Recovered within grace period — silent reset (deploy restart / brief blip)
+            logger.info(
+                "Service recovered within grace period — "
+                "treating as deploy restart, no log or email"
+            )
+            self.current_state.update({
+                'is_running':          True,
+                'last_status':         'RUNNING',
+                'last_check_time':     recovery_time,
+                'failure_start_time':  None,
+                'failure_confirmed':   True,
+                'email_alert_sent':    False,
+                'recovery_email_sent': False,
+            })
+            self._save_state()
+            return (False, 'RUNNING')
+
+        # Guard: only send recovery email once per outage
         if self.current_state.get('recovery_email_sent'):
-            logger.info("Recovery email already sent for this outage — skipping duplicate")
-            self.current_state['is_running'] = True
-            self.current_state['last_status'] = 'RUNNING'
-            self.current_state['last_check_time'] = recovery_time
+            logger.info("Recovery email already sent — skipping duplicate")
+            self.current_state.update({
+                'is_running':      True,
+                'last_status':     'RUNNING',
+                'last_check_time': recovery_time,
+            })
             self._save_state()
             return (True, 'RUNNING')
 
-        failure_start = self.current_state.get('failure_start_time')
+        failure_start    = self.current_state.get('failure_start_time')
         downtime_minutes = calculate_duration(failure_start, recovery_time) if failure_start else 0
 
-        self.current_state['is_running'] = True
-        self.current_state['last_status'] = 'RUNNING'
-        self.current_state['last_recovery_time'] = recovery_time
-        self.current_state['last_check_time'] = recovery_time
-        self.current_state['email_alert_sent'] = False
-        self.current_state['recovery_email_sent'] = True
-        self.current_state['failure_start_time'] = None
+        self.current_state.update({
+            'is_running':          True,
+            'last_status':         'RUNNING',
+            'last_recovery_time':  recovery_time,
+            'last_check_time':     recovery_time,
+            'failure_start_time':  None,
+            'failure_confirmed':   True,
+            'email_alert_sent':    False,
+            'recovery_email_sent': True,
+        })
 
         record = ServiceStatusRecord(
             id=self.csv_handler.generate_unique_id(),
@@ -159,7 +235,7 @@ class MonitorService:
             logger.info("Recovery alert email sent")
 
         self._save_state()
-        logger.info(f"Service recovery recorded: {record.id}, downtime: {downtime_minutes:.1f} min")
+        logger.info(f"Service recovery recorded: {record.id}, downtime: {downtime_minutes:.1f}m")
         return (True, 'RUNNING')
 
     # ── Status & history ─────────────────────────────────────────────────────

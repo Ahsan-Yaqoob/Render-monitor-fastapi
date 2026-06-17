@@ -1,20 +1,17 @@
 // ── Config ────────────────────────────────────────────────────────────────────
-// Resolved at runtime from /api/status → data.ai_backend_url (set via AI_BACKEND_URL in .env)
-let AI_HEALTH_URL = null;
-
 // Service definitions — IDs must match keys returned by /api/health/services
 const DEFAULT_SERVICES = [
     // Core
-    { id: 'core_api',        name: 'Core API',           desc: 'Main FastAPI backend — health & primary endpoints',  category: 'Core' },
+    { id: 'core_api',        name: 'Core API',             desc: 'Main FastAPI backend — health & primary endpoints',       category: 'Core' },
     // AI Features
-    { id: 'voice_agent',     name: 'Voice Agent',         desc: 'ElevenLabs speech-to-text WebSocket',                category: 'AI Features' },
-    { id: 'ai_features',     name: 'AI Features',         desc: 'Quotation chatbot, analyzer & creator (Gemini)',     category: 'AI Features' },
-    { id: 'groq_agents',     name: 'Groq Text Agents',    desc: 'Groq-powered text completion agents',                category: 'AI Features' },
+    { id: 'voice_agent',     name: 'Voice Agent',           desc: 'Browser Web Speech API (native — no external service)',  category: 'AI Features' },
+    { id: 'ai_features',     name: 'AI Features',           desc: 'Quotation chatbot, analyzer & creator (Gemini)',         category: 'AI Features' },
+    { id: 'groq_agents',     name: 'Gemini Text Agents',    desc: 'Gemini-powered text completion & AI agents',             category: 'AI Features' },
     // Integrations
-    { id: 'ai_maps',         name: 'AI Maps',             desc: 'Google Maps route & location search',                category: 'Integrations' },
-    { id: 'ai_image_search', name: 'AI Image Search',     desc: 'AI-powered image discovery',                         category: 'Integrations' },
-    { id: 'file_extractor',  name: 'File Extractor',      desc: 'PDF, DOCX & Excel text extraction (local)',          category: 'Integrations' },
-    { id: 'payment_chatbot', name: 'Payment Chatbot',     desc: 'Make & receive payment agents (Supabase)',           category: 'Integrations' },
+    { id: 'ai_maps',         name: 'AI Maps',               desc: 'Google Maps route & location search',                    category: 'Integrations' },
+    { id: 'ai_image_search', name: 'AI Image Search',       desc: 'AI-powered image discovery (Gemini)',                    category: 'Integrations' },
+    { id: 'file_extractor',  name: 'File Extractor',        desc: 'PDF, DOCX & Excel text extraction (local)',              category: 'Integrations' },
+    { id: 'payment_chatbot', name: 'Payment Chatbot',       desc: 'Make & receive payment agents (Supabase)',               category: 'Integrations' },
 ];
 
 class StatusDashboard {
@@ -61,6 +58,7 @@ class StatusDashboard {
     setupHeaderEvents() {
         document.getElementById('themeToggleBtn')?.addEventListener('click', () => this.toggleTheme());
         document.getElementById('refreshBtn')?.addEventListener('click', () => this.loadAll());
+        document.getElementById('clearLogsBtn')?.addEventListener('click', () => this.clearLogs());
         document.getElementById('manualCheckBtn')?.addEventListener('click', () => this.triggerCheck());
         window.addEventListener('visibilitychange', () => { if (!document.hidden) this.loadAll(); });
     }
@@ -102,25 +100,12 @@ class StatusDashboard {
             try { globalHistory = await api.getHistoryByDays(2000, 90); } catch {}
             try { globalStatus  = await api.getStatus();                } catch {}
 
-            // Resolve AI backend health URL from status response (set via AI_BACKEND_URL in .env)
-            if (!AI_HEALTH_URL && globalStatus?.data?.ai_backend_url) {
-                AI_HEALTH_URL = globalStatus.data.ai_backend_url.replace(/\/$/, '') + '/api/health/services';
-            }
-
-            // Fetch per-service live health from AI backend directly
+            // Fetch per-service health via monitor backend proxy (server-to-server — AI URL never exposed to browser)
             let perServiceHealth = null;
-            if (AI_HEALTH_URL) {
-                try {
-                    const ctrl = new AbortController();
-                    const tid  = setTimeout(() => ctrl.abort(), 8000);
-                    const res  = await fetch(AI_HEALTH_URL, { signal: ctrl.signal });
-                    clearTimeout(tid);
-                    if (res.ok) {
-                        const json = await res.json();
-                        if (json.success) perServiceHealth = json.data;
-                    }
-                } catch {}
-            }
+            try {
+                const healthRes = await api.getServicesHealth();
+                if (healthRes?.success) perServiceHealth = healthRes.data;
+            } catch {}
 
             // Build bars from global history (all services share same backend)
             const globalRecords = globalHistory?.data?.records || [];
@@ -133,8 +118,10 @@ class StatusDashboard {
 
                 // Current status: from per-service health check first
                 let currentStatus = 'unknown';
+                let healthDetail  = null;
                 if (perServiceHealth && id in perServiceHealth) {
                     currentStatus = perServiceHealth[id].status === 'up' ? 'up' : 'down';
+                    healthDetail  = perServiceHealth[id].detail || null;
                 } else if (globalStatus?.data?.is_running === true)  {
                     currentStatus = 'up';
                 } else if (globalStatus?.data?.is_running === false) {
@@ -144,6 +131,7 @@ class StatusDashboard {
                 // History bars: shared (all services on same backend)
                 this.statusData[id] = {
                     currentStatus,
+                    healthDetail,
                     bars:    sharedBars,
                     uptime:  sharedUptime,
                     records: globalRecords,
@@ -229,15 +217,24 @@ class StatusDashboard {
         const sub    = document.getElementById('overallSub');
         const dot    = document.getElementById('brandDot');
 
-        const anyDown = Object.values(this.statusData).some(d => d?.currentStatus === 'down');
+        // Core service = the actual backend process. If it's down, everything is down.
+        const coreDown    = this.statusData['core_api']?.currentStatus === 'down';
+        const anyDown     = Object.values(this.statusData).some(d => d?.currentStatus === 'down');
+        const isPartial   = anyDown && !coreDown;  // some integrations down but core is up
+
+        const bannerCls   = coreDown ? 'banner-down' : isPartial ? 'banner-warn' : 'banner-ok';
+        const iconTxt     = coreDown ? '✗' : isPartial ? '!' : '✓';
+        const titleTxt    = coreDown   ? 'Service Outage Detected'
+                          : isPartial  ? 'Partial Outage — Some Services Degraded'
+                          : 'All Systems Operational';
 
         if (banner) {
             banner.classList.remove('banner-ok', 'banner-down', 'banner-warn');
-            banner.classList.add(anyDown ? 'banner-down' : 'banner-ok');
+            banner.classList.add(bannerCls);
         }
-        if (icon)  icon.textContent  = anyDown ? '✗' : '✓';
-        if (title) title.textContent = anyDown ? 'Service Outage Detected' : 'All Systems Operational';
-        if (dot)   anyDown ? dot.classList.add('dot-down') : dot.classList.remove('dot-down');
+        if (icon)  icon.textContent  = iconTxt;
+        if (title) title.textContent = titleTxt;
+        if (dot)   coreDown ? dot.classList.add('dot-down') : dot.classList.remove('dot-down');
 
         if (sub) {
             const lastCheck = globalStatus?.data?.last_check_time;
@@ -290,8 +287,8 @@ class StatusDashboard {
 
     buildServiceCard(service) {
         const id   = service.id;
-        const data = this.statusData[id] || { currentStatus: 'unknown', bars: this.buildBars([]), uptime: null, records: [] };
-        const { currentStatus, bars, uptime } = data;
+        const data = this.statusData[id] || { currentStatus: 'unknown', bars: this.buildBars([]), uptime: null, records: [], healthDetail: null };
+        const { currentStatus, bars, uptime, healthDetail } = data;
 
         const badgeCls = currentStatus === 'up'   ? 'badge-ok'
                        : currentStatus === 'down'  ? 'badge-fail'
@@ -326,6 +323,7 @@ class StatusDashboard {
         <div class="service-info">
             <div class="service-name">${service.name}</div>
             ${service.desc ? `<div class="service-desc">${service.desc}</div>` : ''}
+            ${healthDetail && healthDetail !== 'OK' ? `<div class="service-detail">${healthDetail}</div>` : ''}
         </div>
         <span class="badge ${badgeCls}">
             <span class="badge-dot"></span>${badgeTxt}
@@ -397,15 +395,33 @@ class StatusDashboard {
         const panel = document.getElementById(`logs-${serviceId}`);
         if (!panel) return;
 
-        const data    = this.statusData[serviceId];
-        const records = [...(data?.records || [])].reverse();
+        const data          = this.statusData[serviceId];
+        const records       = [...(data?.records || [])].reverse();
+        const currentStatus = data?.currentStatus || 'unknown';
+        const healthDetail  = data?.healthDetail  || null;
 
-        if (!records.length) {
-            panel.innerHTML = '<div class="log-empty">No events recorded yet — logs will appear here as the backend goes down or recovers.</div>';
-            return;
-        }
+        // ── Live health check result (always shown at top) ──────────────────
+        const isDown    = currentStatus === 'down';
+        const isUnknown = currentStatus === 'unknown';
+        const liveClass = isDown ? 'log-event log-fail' : isUnknown ? 'log-event' : 'log-event log-ok';
+        const liveBadge = isDown ? '<span class="lbadge-fail">OUTAGE</span>'
+                        : isUnknown ? '<span class="lbadge-unknown">UNKNOWN</span>'
+                        : '<span class="lbadge-ok">OPERATIONAL</span>';
+        const liveDetail = healthDetail && healthDetail !== 'OK'
+            ? `<span class="log-issue">${healthDetail}</span>` : '';
 
-        const items = records.slice(0, 50).map(r => {
+        const liveEntry = `
+<div class="${liveClass}">
+    <div class="log-dot"></div>
+    <div class="log-body">
+        ${liveBadge}
+        <span class="log-date">Live check · ${new Date().toLocaleTimeString()}</span>
+        ${liveDetail}
+    </div>
+</div>`;
+
+        // ── Historical events from monitor ───────────────────────────────────
+        const historyItems = records.slice(0, 50).map(r => {
             const isFail = r.status === 'FAILED';
             const date   = new Date(r.timestamp).toLocaleString();
             const dur    = (!isFail && r.duration > 0) ? ` · Down for ${this.fmtDur(r.duration)}` : '';
@@ -423,7 +439,68 @@ class StatusDashboard {
 </div>`;
         }).join('');
 
-        panel.innerHTML = `<div class="log-list">${items}</div>`;
+        const historySection = records.length
+            ? `<div class="log-section-label">Backend Event History</div><div class="log-list">${historyItems}</div>`
+            : `<div class="log-empty">No backend events yet — history will appear here when the service goes down or recovers.</div>`;
+
+        panel.innerHTML = `
+<div class="log-section-label">Current Status</div>
+<div class="log-list">${liveEntry}</div>
+${historySection}`;
+
+        // Core API: append live server logs from the AI backend's in-memory buffer
+        if (serviceId === 'core_api') {
+            this._appendServerLogs(panel, isDown);
+        }
+    }
+
+    async _appendServerLogs(panel, isDown) {
+        const label = document.createElement('div');
+        label.className = 'log-section-label';
+        label.textContent = 'Live Server Logs (Render)';
+        panel.appendChild(label);
+
+        const box = document.createElement('div');
+        box.className = 'render-log-box';
+        box.textContent = 'Fetching…';
+        panel.appendChild(box);
+
+        // Classify a log line using Render's own level label, with keyword fallback
+        const classify = (e) => {
+            const lvl = (e.level || '').toLowerCase();
+            const ml  = (e.message || '').toLowerCase();
+            if (lvl === 'error' || lvl === 'critical' || /traceback|exception|killed/.test(ml)) return 'rlog-error';
+            if (lvl === 'warning' || lvl === 'warn') return 'rlog-warn';
+            if (/application startup complete|uvicorn running|started server|your service is live/.test(ml)) return 'rlog-ok';
+            return 'rlog-info';
+        };
+
+        try {
+            const res  = await api.getRenderLogs(150);
+            const logs = res?.data || [];
+
+            if (!logs.length) {
+                box.textContent = 'No logs returned from Render.';
+                return;
+            }
+
+            // When down: bubble error lines to the top so you see the cause immediately
+            const display = isDown
+                ? [...logs.filter(e => classify(e) === 'rlog-error'), ...logs]
+                : logs;
+
+            box.innerHTML = display.slice(0, 150).map(e => {
+                const msg = e.message || '';
+                const ts  = e.timestamp ? new Date(e.timestamp).toLocaleTimeString() : '';
+                return `<div class="rlog-line ${classify(e)}"><span class="rlog-ts">${ts}</span><span class="rlog-msg">${this._esc(msg)}</span></div>`;
+            }).join('');
+        } catch (err) {
+            box.textContent = `Could not load logs: ${err.message}`;
+        }
+    }
+
+    _esc(s) {
+        return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
 
     // ── Actions ───────────────────────────────────────────────────────────────
@@ -441,6 +518,44 @@ class StatusDashboard {
         } finally {
             if (btn) { btn.disabled = false; btn.textContent = '⬡ Check Now'; }
         }
+    }
+
+    clearLogs() {
+        const btn = document.getElementById('clearLogsBtn');
+        if (!btn) return;
+
+        // First click: show inline confirm
+        if (btn.dataset.confirming !== 'true') {
+            btn.dataset.confirming = 'true';
+            btn.textContent = 'Confirm? Click again';
+            btn.style.background = 'rgba(239,68,68,0.35)';
+            // Auto-cancel after 4 seconds
+            this._clearConfirmTimer = setTimeout(() => {
+                btn.dataset.confirming = '';
+                btn.textContent = '🗑 Clear Logs';
+                btn.style.background = '';
+            }, 4000);
+            return;
+        }
+
+        // Second click: confirmed — do it
+        clearTimeout(this._clearConfirmTimer);
+        btn.dataset.confirming = '';
+        btn.disabled = true;
+        btn.textContent = 'Clearing…';
+        btn.style.background = '';
+
+        api.clearLogs()
+            .then(() => {
+                this.expandedLogs.clear();
+                return this.loadAll();
+            })
+            .then(() => this.showAlert('Logs cleared successfully.', 'success'))
+            .catch(() => this.showAlert('Failed to clear logs.', 'error'))
+            .finally(() => {
+                btn.disabled = false;
+                btn.textContent = '🗑 Clear Logs';
+            });
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

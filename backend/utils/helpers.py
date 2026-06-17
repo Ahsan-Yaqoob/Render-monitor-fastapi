@@ -1,5 +1,4 @@
-from datetime import datetime, timedelta
-import json
+from datetime import datetime
 
 
 def get_current_timestamp():
@@ -45,43 +44,6 @@ def format_duration_readable(minutes):
         return f"{hours}h"
     else:
         return f"{hours}h {mins}m"
-
-
-def safe_json_loads(json_str, default=None):
-    """Safely parse JSON string."""
-    try:
-        return json.loads(json_str) if json_str else default
-    except (json.JSONDecodeError, TypeError):
-        return default
-
-
-def safe_json_dumps(obj, indent=None):
-    """Safely convert object to JSON string."""
-    try:
-        return json.dumps(obj, indent=indent)
-    except (TypeError, ValueError):
-        return "{}"
-
-
-def normalize_status(status):
-    """Normalize status string to uppercase."""
-    if status:
-        return status.upper()
-    return None
-
-
-def is_valid_email(email):
-    """Basic email validation."""
-    if not email or '@' not in email:
-        return False
-    parts = email.split('@')
-    if len(parts) != 2:
-        return False
-    if not parts[0] or not parts[1]:
-        return False
-    if '.' not in parts[1]:
-        return False
-    return True
 
 
 def time_ago(timestamp_str):
