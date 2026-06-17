@@ -8,13 +8,20 @@ load_dotenv()
 class Settings:
     """Application settings loaded from environment variables."""
 
+    @staticmethod
+    def _clean(value):
+        """Strip whitespace and stray surrounding quotes (common when pasting into a dashboard)."""
+        if value is None:
+            return None
+        return value.strip().strip('"').strip("'").strip()
+
     def __init__(self):
-        self.RENDER_API_KEY    = os.getenv('RENDER_API_KEY')
-        self.RENDER_SERVICE_ID = os.getenv('RENDER_SERVICE_ID')
-        self.AI_BACKEND_URL    = os.getenv('AI_BACKEND_URL', '').strip().rstrip('/')
-        self.EMAIL_SENDER = os.getenv('EMAIL_SENDER')
-        self.EMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD')
-        self.EMAIL_RECEIVER = os.getenv('EMAIL_RECEIVER')
+        self.RENDER_API_KEY    = self._clean(os.getenv('RENDER_API_KEY'))
+        self.RENDER_SERVICE_ID = self._clean(os.getenv('RENDER_SERVICE_ID'))
+        self.AI_BACKEND_URL    = self._clean(os.getenv('AI_BACKEND_URL') or '').rstrip('/')
+        self.EMAIL_SENDER = self._clean(os.getenv('EMAIL_SENDER'))
+        self.EMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD')  # app passwords may contain spaces — don't strip
+        self.EMAIL_RECEIVER = self._clean(os.getenv('EMAIL_RECEIVER'))
         self.FASTAPI_PORT = int(os.getenv('FASTAPI_PORT', 8000))
         self.FASTAPI_HOST = os.getenv('FASTAPI_HOST', '0.0.0.0')
         self.DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'

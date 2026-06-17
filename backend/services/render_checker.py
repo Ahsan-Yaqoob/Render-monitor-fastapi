@@ -208,7 +208,23 @@ class RenderChecker:
             )
             if r.status_code == 200:
                 return r.json()
-            logger.warning(f"Render API returned HTTP {r.status_code}")
+
+            # Detailed diagnostics so misconfiguration is obvious in the deploy logs
+            sid = self.service_id or ""
+            masked_id = f"{sid[:8]}…{sid[-4:]}" if len(sid) > 12 else sid
+            key_set = "set" if self.api_key else "MISSING"
+            if r.status_code == 401:
+                logger.error(
+                    f"Render API 401 Unauthorized — RENDER_API_KEY is invalid/expired ({key_set})"
+                )
+            elif r.status_code == 404:
+                logger.error(
+                    f"Render API 404 — RENDER_SERVICE_ID not found or not owned by this key. "
+                    f"service_id='{masked_id}' (len={len(sid)}), api_key={key_set}. "
+                    f"Check for stray quotes/spaces in the dashboard env vars."
+                )
+            else:
+                logger.warning(f"Render API returned HTTP {r.status_code}: {r.text[:120]}")
             return None
         except Exception as e:
             logger.error(f"Error fetching service data: {e}")
