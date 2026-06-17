@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Chatbot System — Status</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+<header>
+    <div class="header-content">
+        <div class="header-brand">
+            <div class="brand-dot" id="brandDot"></div>
+            <span class="brand-name">AI Chatbot System</span>
+            <span class="brand-sub">Status</span>
+        </div>
+        <div class="header-actions">
+            <span class="refresh-time" id="refreshTime"></span>
+            <button class="btn btn-ghost" id="themeToggleBtn">☀️ Light</button>
+            <button class="btn btn-ghost" id="refreshBtn">↺ Refresh</button>
+            <button class="btn btn-primary" id="manualCheckBtn">⬡ Check Now</button>
+        </div>
+    </div>
+</header>
+
+<main>
+    <div class="container">
+
+        <div id="alertContainer"></div>
+
+        <!-- Overall status banner -->
+        <div class="overall-section">
+            <div class="overall-banner banner-ok" id="overallBanner">
+                <div class="overall-icon-wrap">
+                    <span class="overall-icon" id="overallIcon">✓</span>
+                </div>
+                <div class="overall-text">
+                    <div class="overall-title" id="overallTitle">All Systems Operational</div>
+                    <div class="overall-sub"  id="overallSub">Loading…</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Services list — rendered by JS -->
+        <div class="services-list" id="servicesList">
+            <div class="loading-state">
+                <div class="spinner"></div>
+                <span>Loading services…</span>
+            </div>
+        </div>
+
+    </div>
+</main>
+
+<footer>
+    <span>AI Chatbot System Monitor</span>
+    <span class="footer-sep">·</span>
+    <span>Checks every 1 minute</span>
+    <span class="footer-sep">·</span>
+    <span>Auto-refresh every 30s</span>
+</footer>
+
+<!-- Global bar tooltip -->
+<div class="bar-tooltip" id="barTooltip"></div>
+
+<script src="/js/api.js"></script>
+<script src="/js/dashboard.js"></script>
+
+</body>
+</html>
