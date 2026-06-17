@@ -16,8 +16,12 @@ class Settings:
         return value.strip().strip('"').strip("'").strip()
 
     def __init__(self):
-        self.RENDER_API_KEY    = self._clean(os.getenv('RENDER_API_KEY'))
-        self.RENDER_SERVICE_ID = self._clean(os.getenv('RENDER_SERVICE_ID'))
+        self.RENDER_API_KEY = self._clean(os.getenv('RENDER_API_KEY'))
+        # NOTE: 'RENDER_SERVICE_ID' is a RESERVED built-in var on Render — the platform
+        # auto-injects it set to the *current* service's own id, which would shadow any
+        # custom value. We use MONITOR_SERVICE_ID instead (the id of the service we watch),
+        # falling back to RENDER_SERVICE_ID only for local dev where there's no collision.
+        self.MONITOR_SERVICE_ID = self._clean(os.getenv('MONITOR_SERVICE_ID') or os.getenv('RENDER_SERVICE_ID'))
         self.AI_BACKEND_URL    = self._clean(os.getenv('AI_BACKEND_URL') or '').rstrip('/')
         self.EMAIL_SENDER = self._clean(os.getenv('EMAIL_SENDER'))
         self.EMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD')  # app passwords may contain spaces — don't strip
@@ -42,7 +46,7 @@ class Settings:
         """Validate required environment variables."""
         required_vars = {
             'RENDER_API_KEY': self.RENDER_API_KEY,
-            'RENDER_SERVICE_ID': self.RENDER_SERVICE_ID,
+            'MONITOR_SERVICE_ID': self.MONITOR_SERVICE_ID,
             'EMAIL_SENDER': self.EMAIL_SENDER,
             'EMAIL_PASSWORD': self.EMAIL_PASSWORD,
             'EMAIL_RECEIVER': self.EMAIL_RECEIVER,

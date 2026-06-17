@@ -19,7 +19,7 @@ class RenderChecker:
 
     def __init__(self):
         self.api_key    = settings.RENDER_API_KEY
-        self.service_id = settings.RENDER_SERVICE_ID
+        self.service_id = settings.MONITOR_SERVICE_ID
         self.api_url    = settings.RENDER_API_URL
         self.headers    = {
             "Authorization": f"Bearer {self.api_key}",
@@ -219,9 +219,10 @@ class RenderChecker:
                 )
             elif r.status_code == 404:
                 logger.error(
-                    f"Render API 404 — RENDER_SERVICE_ID not found or not owned by this key. "
+                    f"Render API 404 — MONITOR_SERVICE_ID not found or not owned by this key. "
                     f"service_id='{masked_id}' (len={len(sid)}), api_key={key_set}. "
-                    f"Check for stray quotes/spaces in the dashboard env vars."
+                    f"If this id looks like the monitor's OWN service, you hit the reserved "
+                    f"RENDER_SERVICE_ID collision — use MONITOR_SERVICE_ID instead."
                 )
             else:
                 logger.warning(f"Render API returned HTTP {r.status_code}: {r.text[:120]}")

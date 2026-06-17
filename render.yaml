@@ -8,7 +8,9 @@ services:
     envVars:
       - key: RENDER_API_KEY
         sync: false
-      - key: RENDER_SERVICE_ID
+      # NOTE: do NOT use the name RENDER_SERVICE_ID — Render reserves it and auto-injects
+      # this service's own id, shadowing your value. Use MONITOR_SERVICE_ID instead.
+      - key: MONITOR_SERVICE_ID
         sync: false
       - key: AI_BACKEND_URL
         sync: false
