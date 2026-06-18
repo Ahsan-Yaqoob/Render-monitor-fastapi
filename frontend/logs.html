@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Chatbot System — Logs</title>
+    <link rel="stylesheet" href="/css/style.css?v=9">
+</head>
+<body>
+
+<header>
+    <div class="header-content">
+        <div class="header-brand">
+            <div class="brand-dot" id="brandDot"></div>
+            <span class="brand-name">AI Chatbot System</span>
+            <span class="brand-sub">Logs</span>
+        </div>
+        <div class="header-actions">
+            <span class="refresh-time" id="refreshTime"></span>
+            <a class="btn btn-ghost" href="/">← Status</a>
+            <button class="btn btn-ghost" id="themeToggleBtn">☀️ Light</button>
+            <button class="btn btn-ghost" id="refreshBtn">↺ Refresh</button>
+        </div>
+    </div>
+</header>
+
+<main>
+    <div class="container">
+
+        <div id="alertContainer"></div>
+
+        <!-- ── Live server logs ─────────────────────────────────────────── -->
+        <section class="page-card">
+            <div class="srv-logs">
+                <div class="srv-logs-head">
+                    <div class="srv-logs-title">
+                        <span class="srv-logs-dot" id="slogDot"></span>
+                        <span>Live Server Logs</span>
+                        <span class="srv-logs-sub" id="slogSub">Render</span>
+                    </div>
+                    <div class="srv-logs-stats" id="slogStats"></div>
+                </div>
+                <div class="srv-logs-controls">
+                    <div class="slog-chips" id="slogChips">
+                        <button class="slog-chip active" data-f="all">All</button>
+                        <button class="slog-chip" data-f="error">Errors</button>
+                        <button class="slog-chip" data-f="warn">Warnings</button>
+                        <button class="slog-chip" data-f="request">Requests</button>
+                    </div>
+                    <input class="slog-search" id="slogSearch" type="text" placeholder="Filter logs…" autocomplete="off">
+                </div>
+                <div class="render-log-box render-log-box-tall" id="slogBox">
+                    <div class="rlog-placeholder">Fetching server logs…</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ── Error & warning lines ────────────────────────────────────── -->
+        <section class="page-card">
+            <div class="page-card-title">
+                <span class="srv-logs-dot" id="errDot"></span>
+                Errors &amp; Warnings
+                <span class="page-card-count" id="errCount"></span>
+            </div>
+            <div class="error-list" id="errorList">
+                <div class="rlog-placeholder">Loading…</div>
+            </div>
+        </section>
+
+        <!-- ── Outage history ───────────────────────────────────────────── -->
+        <section class="page-card">
+            <div class="page-card-title">
+                Outage History
+                <span class="page-card-count" id="outageCount"></span>
+            </div>
+            <div class="outage-list" id="outageList">
+                <div class="rlog-placeholder">Loading…</div>
+            </div>
+        </section>
+
+    </div>
+</main>
+
+<footer>
+    <span>AI Chatbot System Monitor</span>
+    <span class="footer-sep">·</span>
+    <span>Live logs pulled directly from Render</span>
+    <span class="footer-sep">·</span>
+    <span>Auto-refresh every 30s</span>
+</footer>
+
+<script src="/js/api.js?v=14"></script>
+<script src="/js/logs.js?v=14"></script>
+
+</body>
+</html>

@@ -53,15 +53,20 @@ async def shutdown_event():
         scheduler.stop()
 
 
+def _frontend_file(name: str) -> str:
+    return os.path.join(os.path.dirname(os.path.dirname(__file__)), 'frontend', name)
+
+
 @app.get("/")
 async def serve_index():
-    """Serve main dashboard HTML."""
-    frontend_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)),
-        'frontend',
-        'index.html'
-    )
-    return FileResponse(frontend_path)
+    """Serve the main status overview page."""
+    return FileResponse(_frontend_file('index.html'))
+
+
+@app.get("/logs")
+async def serve_logs():
+    """Serve the live logs page."""
+    return FileResponse(_frontend_file('logs.html'))
 
 
 @app.get("/api/info")

@@ -136,6 +136,7 @@ header {
     white-space: nowrap;
     background: none;
     color: var(--text);
+    text-decoration: none;   /* so <a class="btn"> links look like buttons */
 }
 
 .btn:disabled { opacity: 0.55; cursor: not-allowed; }
@@ -558,43 +559,152 @@ main { padding: 32px 0 60px; }
     padding: 12px 0;
 }
 
-/* ── Render server log lines ─────────────────────────────────────────────────── */
-.render-log-box {
-    font-family: 'SF Mono', 'Consolas', 'Fira Code', monospace;
-    font-size: 11.5px;
-    line-height: 1.55;
-    background: rgba(0, 0, 0, 0.25);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 8px 10px;
-    max-height: 320px;
-    overflow-y: auto;
-    margin-top: 4px;
-}
+/* ── Live server logs (Render) ───────────────────────────────────────────────── */
+.srv-logs { margin-top: 6px; }
 
-[data-theme="light"] .render-log-box {
-    background: rgba(0, 0, 0, 0.04);
+.srv-logs-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
 }
+.srv-logs-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+}
+.srv-logs-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    flex-shrink: 0;
+}
+.srv-logs-dot.ok   { background: var(--green); box-shadow: 0 0 0 3px var(--green-lo); }
+.srv-logs-dot.warn { background: var(--amber); box-shadow: 0 0 0 3px var(--amber-lo); }
+.srv-logs-dot.err  { background: var(--red);   box-shadow: 0 0 0 3px var(--red-lo);
+    animation: slog-pulse 1.6s ease-in-out infinite; }
+@keyframes slog-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .4; } }
+
+.srv-logs-sub { font-size: 11px; font-weight: 500; color: var(--text-muted); }
+
+.srv-logs-stats { display: flex; gap: 6px; flex-wrap: wrap; }
+.slog-stat {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 20px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+}
+.slog-stat.err  { background: var(--red-lo);   color: var(--red);   border-color: transparent; }
+.slog-stat.warn { background: var(--amber-lo); color: var(--amber); border-color: transparent; }
+
+.srv-logs-controls {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+}
+.slog-chips { display: flex; gap: 4px; }
+.slog-chip {
+    font-size: 11.5px;
+    font-weight: 600;
+    padding: 4px 11px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all .15s ease;
+}
+.slog-chip:hover  { background: var(--surface); color: var(--text); }
+.slog-chip.active { background: var(--blue); border-color: var(--blue); color: #fff; }
+
+.slog-search {
+    flex: 1;
+    min-width: 140px;
+    max-width: 260px;
+    font-size: 12px;
+    padding: 5px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    outline: none;
+}
+.slog-search:focus { border-color: var(--blue); }
+.slog-search::placeholder { color: var(--text-muted); }
+
+.render-log-box {
+    font-family: 'SF Mono', 'Consolas', 'Fira Code', ui-monospace, monospace;
+    font-size: 11.5px;
+    line-height: 1.5;
+    background: rgba(0, 0, 0, 0.28);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 4px;
+    max-height: 380px;
+    overflow-y: auto;
+}
+[data-theme="light"] .render-log-box { background: rgba(15, 23, 42, 0.04); }
+
+.rlog-placeholder { color: var(--text-muted); font-size: 12px; padding: 14px 8px; }
 
 .rlog-line {
     display: flex;
-    gap: 10px;
-    padding: 1px 0;
+    align-items: baseline;
+    gap: 8px;
+    padding: 2px 8px;
+    border-radius: 4px;
     white-space: pre-wrap;
-    word-break: break-all;
+    word-break: break-word;
 }
+.rlog-line:hover { background: var(--surface); }
+.rlog-error { background: rgba(239, 68, 68, 0.07); box-shadow: inset 2px 0 0 var(--red); }
+.rlog-warn  { box-shadow: inset 2px 0 0 var(--amber); }
 
 .rlog-ts {
     color: var(--text-muted);
     flex-shrink: 0;
     font-size: 10.5px;
-    min-width: 60px;
+    min-width: 64px;
 }
+.rlog-badge {
+    flex-shrink: 0;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .04em;
+    padding: 1px 5px;
+    border-radius: 4px;
+    min-width: 40px;
+    text-align: center;
+    color: var(--text-muted);
+    background: var(--surface);
+}
+.rlog-badge-error { background: var(--red-lo);   color: var(--red); }
+.rlog-badge-warn  { background: var(--amber-lo); color: var(--amber); }
+.rlog-badge-ok    { background: var(--green-lo); color: var(--green); }
+.rlog-badge-info  { background: var(--surface);  color: var(--text-muted); }
 
-.rlog-msg  { color: var(--text-dim); }
-.rlog-error .rlog-msg { color: #f87171; font-weight: 500; }
-.rlog-warn  .rlog-msg { color: var(--amber); }
+.rlog-msg { color: var(--text-dim); flex: 1; }
+.rlog-error .rlog-msg { color: #fca5a5; }
 .rlog-ok    .rlog-msg { color: var(--green); }
+
+.rlog-tag { color: var(--blue); font-weight: 600; }
+[data-theme="light"] .rlog-tag { color: #1d4ed8; }
+.rlog-status { font-weight: 700; }
+.rlog-status.sc-ok   { color: var(--green); }
+.rlog-status.sc-warn { color: var(--amber); }
+.rlog-status.sc-err  { color: var(--red); }
+.rlog-status.sc-info { color: var(--text-dim); }
 
 /* ── Loading / Empty states ──────────────────────────────────────────────────── */
 .loading-state {
@@ -653,4 +763,84 @@ footer {
     .service-row-header { flex-wrap: wrap; }
     .service-desc { display: none; }
     .uptime-bar { border-radius: 2px; }
+}
+
+/* ── Logs page ───────────────────────────────────────────────────────────────── */
+.page-card {
+    background: var(--surface);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow: var(--card-shadow);
+    padding: 18px 20px;
+    margin-bottom: 18px;
+}
+
+.page-card-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 12px;
+}
+.page-card-count {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-muted);
+    background: var(--surface-hov);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 1px 9px;
+}
+
+.render-log-box-tall { max-height: 60vh; }
+
+/* Errors & warnings list */
+.error-list { display: flex; flex-direction: column; gap: 6px; }
+.error-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 9px 12px;
+    border-radius: 8px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+}
+.error-item.error-error { background: rgba(239,68,68,0.07); border-color: rgba(239,68,68,0.25); }
+.error-item.error-warn  { background: rgba(245,158,11,0.06); border-color: rgba(245,158,11,0.22); }
+.error-body { flex: 1; min-width: 0; }
+.error-msg {
+    font-family: 'SF Mono', 'Consolas', 'Fira Code', ui-monospace, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text);
+    word-break: break-word;
+    white-space: pre-wrap;
+}
+.error-time { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
+.error-empty { color: var(--green); font-size: 13px; padding: 6px 2px; }
+
+/* Outage history list */
+.outage-list { display: flex; flex-direction: column; gap: 6px; }
+.outage-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+}
+.outage-body { flex: 1; min-width: 0; }
+.outage-date { font-size: 13px; font-weight: 500; color: var(--text); }
+.outage-meta { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+
+@media (max-width: 640px) {
+    .page-card { padding: 14px; }
+    .srv-logs-controls { flex-direction: column; align-items: stretch; }
+    .slog-search { max-width: none; }
+    .render-log-box-tall { max-height: 55vh; }
 }

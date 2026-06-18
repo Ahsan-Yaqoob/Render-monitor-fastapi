@@ -118,14 +118,22 @@ def get_services_health():
 
 
 @router.get("/render-logs")
-def get_render_logs(limit: int = Query(150, ge=1, le=200)):
+def get_render_logs(limit: int = Query(2000, ge=1, le=5000)):
     """
-    Return the most recent live server logs, pulled directly from Render's
-    /v1/logs API. Reuses the same 30-second cache the health checker uses,
-    so no extra Render API call is made per dashboard refresh.
+    Return the live server logs for a fixed time window (see render_checker
+    log_window_minutes), pulled directly from Render's /v1/logs API. The window is
+    time-based, so the span shown stays consistent regardless of log volume.
+    Reuses the same 30-second cache the health checker uses.
     """
-    logs = monitor_service.render_checker.fetch_logs()
-    return {"success": True, "data": logs[:limit], "total": len(logs), "showing": min(limit, len(logs))}
+    checker = monitor_service.render_checker
+    logs = checker.fetch_logs()
+    return {
+        "success": True,
+        "data": logs[:limit],
+        "total": len(logs),
+        "showing": min(limit, len(logs)),
+        "window_minutes": checker.log_window_minutes,
+    }
 
 
 @router.get("/health")

@@ -1,26 +1,27 @@
 // ── Config ────────────────────────────────────────────────────────────────────
-// Service definitions — IDs must match keys returned by /api/health/services
+// Service definitions — IDs must match keys returned by /api/health/services.
+// Order: Core first, then the AI features (Quotation → Gemini text → Voice),
+// then the integrations (Maps → Image → File → Payment).
 const DEFAULT_SERVICES = [
     // Core
-    { id: 'core_api',        name: 'Core API',             desc: 'Main FastAPI backend — health & primary endpoints',       category: 'Core' },
+    { id: 'core_api',        name: 'Core API',            desc: 'Main FastAPI backend — health & primary endpoints',        category: 'Core' },
     // AI Features
-    { id: 'voice_agent',     name: 'Voice Agent',           desc: 'Browser Web Speech API (native — no external service)',  category: 'AI Features' },
-    { id: 'ai_features',     name: 'AI Features',           desc: 'Quotation chatbot, analyzer & creator (Gemini)',         category: 'AI Features' },
-    { id: 'groq_agents',     name: 'Gemini Text Agents',    desc: 'Gemini-powered text completion & AI agents',             category: 'AI Features' },
+    { id: 'ai_features',     name: 'Quotation Chatbot',   desc: 'Quotation chatbot, analyzer & creator (Gemini)',           category: 'AI Features' },
+    { id: 'groq_agents',     name: 'Gemini Text Agents',  desc: 'Gemini-powered text completion & AI agents',               category: 'AI Features' },
+    { id: 'voice_agent',     name: 'Voice Agent',         desc: 'Browser Web Speech API (native — no external service)',    category: 'AI Features' },
     // Integrations
-    { id: 'ai_maps',         name: 'AI Maps',               desc: 'Google Maps route & location search',                    category: 'Integrations' },
-    { id: 'ai_image_search', name: 'AI Image Search',       desc: 'AI-powered image discovery (Gemini)',                    category: 'Integrations' },
-    { id: 'file_extractor',  name: 'File Extractor',        desc: 'PDF, DOCX & Excel text extraction (local)',              category: 'Integrations' },
-    { id: 'payment_chatbot', name: 'Payment Chatbot',       desc: 'Make & receive payment agents (Supabase)',               category: 'Integrations' },
+    { id: 'ai_maps',         name: 'AI Maps',             desc: 'Google Maps route & location search',                      category: 'Integrations' },
+    { id: 'ai_image_search', name: 'AI Image Search',     desc: 'AI-powered image discovery (Gemini)',                      category: 'Integrations' },
+    { id: 'file_extractor',  name: 'File Extractor',      desc: 'PDF, DOCX & Excel text extraction (local)',                category: 'Integrations' },
+    { id: 'payment_chatbot', name: 'Payment Chatbot',     desc: 'Make & receive payment agents — backed by Supabase database', category: 'Integrations' },
 ];
 
 class StatusDashboard {
     constructor() {
-        this.services     = [];
-        this.statusData   = {};      // id -> { currentStatus, bars, uptime, records }
-        this.expandedLogs = new Set();
-        this.isLoading    = false;
-        this.tooltip      = null;
+        this.services   = [];
+        this.statusData = {};      // id -> { currentStatus, bars, uptime, records }
+        this.isLoading  = false;
+        this.tooltip    = null;
         this.init();
     }
 
@@ -100,23 +101,20 @@ class StatusDashboard {
             try { globalHistory = await api.getHistoryByDays(2000, 90); } catch {}
             try { globalStatus  = await api.getStatus();                } catch {}
 
-            // Fetch per-service health via monitor backend proxy (server-to-server — AI URL never exposed to browser)
+            // Per-service health via monitor backend proxy (server-to-server — AI URL never exposed to browser)
             let perServiceHealth = null;
             try {
                 const healthRes = await api.getServicesHealth();
                 if (healthRes?.success) perServiceHealth = healthRes.data;
             } catch {}
 
-            // Build bars from global history (all services share same backend)
+            // Build bars from global history (all services share the same backend)
             const globalRecords = globalHistory?.data?.records || [];
             const sharedBars    = this.buildBars(globalRecords, 90);
             const sharedUptime  = this.calcUptime(sharedBars);
 
-            // Load per-service current status
             for (const s of this.services) {
                 const id = s.id;
-
-                // Current status: from per-service health check first
                 let currentStatus = 'unknown';
                 let healthDetail  = null;
                 if (perServiceHealth && id in perServiceHealth) {
@@ -128,7 +126,6 @@ class StatusDashboard {
                     currentStatus = 'down';
                 }
 
-                // History bars: shared (all services on same backend)
                 this.statusData[id] = {
                     currentStatus,
                     healthDetail,
@@ -256,12 +253,11 @@ class StatusDashboard {
             return;
         }
 
-        // Group by category
+        // Group by category, preserving definition order
         const groups = {};
         for (const s of this.services) {
             const cat = s.category || 'Services';
-            if (!groups[cat]) groups[cat] = [];
-            groups[cat].push(s);
+            (groups[cat] = groups[cat] || []).push(s);
         }
 
         let html = '';
@@ -272,29 +268,18 @@ class StatusDashboard {
 
         container.innerHTML = html;
         this.attachBarEvents();
-
-        // Re-open expanded log panels
-        for (const id of this.expandedLogs) {
-            const panel = document.getElementById(`logs-${id}`);
-            if (panel) {
-                panel.style.display = 'block';
-                const arrow = document.getElementById(`arrow-${id}`);
-                if (arrow) arrow.textContent = '▴';
-                this.renderLogPanel(id);
-            }
-        }
     }
 
     buildServiceCard(service) {
         const id   = service.id;
-        const data = this.statusData[id] || { currentStatus: 'unknown', bars: this.buildBars([]), uptime: null, records: [], healthDetail: null };
+        const data = this.statusData[id] || { currentStatus: 'unknown', bars: this.buildBars([]), uptime: null, healthDetail: null };
         const { currentStatus, bars, uptime, healthDetail } = data;
 
         const badgeCls = currentStatus === 'up'   ? 'badge-ok'
-                       : currentStatus === 'down'  ? 'badge-fail'
+                       : currentStatus === 'down' ? 'badge-fail'
                        : 'badge-unknown';
         const badgeTxt = currentStatus === 'up'   ? 'Operational'
-                       : currentStatus === 'down'  ? 'Outage'
+                       : currentStatus === 'down' ? 'Outage'
                        : 'Unknown';
 
         const barsHTML = bars.map(b => {
@@ -306,7 +291,6 @@ class StatusDashboard {
             return `<div class="uptime-bar bar-${b.status}" data-date="${b.date}" data-label="${lbl}"></div>`;
         }).join('');
 
-        // Left label: monitoring start date (first bar)
         const firstBar = bars[0];
         const leftLabel = firstBar
             ? new Date(firstBar.date + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
@@ -338,16 +322,6 @@ class StatusDashboard {
             <span>Today</span>
         </div>
     </div>
-
-    <div class="view-logs-row">
-        <button class="view-logs-btn" id="logbtn-${id}" onclick="dashboard.toggleLogs('${id}')">
-            View Logs <span class="log-arrow" id="arrow-${id}">▾</span>
-        </button>
-    </div>
-
-    <div class="service-log-panel" id="logs-${id}" style="display:none">
-        <div class="log-loading">Loading…</div>
-    </div>
 </div>`;
     }
 
@@ -369,138 +343,6 @@ class StatusDashboard {
             bar.addEventListener('mousemove', e => this.placeTooltip(e));
             bar.addEventListener('mouseleave', () => this.hideTooltip());
         });
-    }
-
-    // ── Log panel ─────────────────────────────────────────────────────────────
-
-    toggleLogs(serviceId) {
-        const panel = document.getElementById(`logs-${serviceId}`);
-        const arrow = document.getElementById(`arrow-${serviceId}`);
-        if (!panel) return;
-
-        const isOpen = panel.style.display !== 'none';
-        if (isOpen) {
-            panel.style.display = 'none';
-            if (arrow) arrow.textContent = '▾';
-            this.expandedLogs.delete(serviceId);
-        } else {
-            panel.style.display = 'block';
-            if (arrow) arrow.textContent = '▴';
-            this.expandedLogs.add(serviceId);
-            this.renderLogPanel(serviceId);
-        }
-    }
-
-    renderLogPanel(serviceId) {
-        const panel = document.getElementById(`logs-${serviceId}`);
-        if (!panel) return;
-
-        const data          = this.statusData[serviceId];
-        const records       = [...(data?.records || [])].reverse();
-        const currentStatus = data?.currentStatus || 'unknown';
-        const healthDetail  = data?.healthDetail  || null;
-
-        // ── Live health check result (always shown at top) ──────────────────
-        const isDown    = currentStatus === 'down';
-        const isUnknown = currentStatus === 'unknown';
-        const liveClass = isDown ? 'log-event log-fail' : isUnknown ? 'log-event' : 'log-event log-ok';
-        const liveBadge = isDown ? '<span class="lbadge-fail">OUTAGE</span>'
-                        : isUnknown ? '<span class="lbadge-unknown">UNKNOWN</span>'
-                        : '<span class="lbadge-ok">OPERATIONAL</span>';
-        const liveDetail = healthDetail && healthDetail !== 'OK'
-            ? `<span class="log-issue">${healthDetail}</span>` : '';
-
-        const liveEntry = `
-<div class="${liveClass}">
-    <div class="log-dot"></div>
-    <div class="log-body">
-        ${liveBadge}
-        <span class="log-date">Live check · ${new Date().toLocaleTimeString()}</span>
-        ${liveDetail}
-    </div>
-</div>`;
-
-        // ── Historical events from monitor ───────────────────────────────────
-        const historyItems = records.slice(0, 50).map(r => {
-            const isFail = r.status === 'FAILED';
-            const date   = new Date(r.timestamp).toLocaleString();
-            const dur    = (!isFail && r.duration > 0) ? ` · Down for ${this.fmtDur(r.duration)}` : '';
-            const issue  = (r.issue_type && r.issue_type !== 'NONE') ? r.issue_type : '';
-
-            return `
-<div class="log-event ${isFail ? 'log-fail' : 'log-ok'}">
-    <div class="log-dot"></div>
-    <div class="log-body">
-        <span class="${isFail ? 'lbadge-fail' : 'lbadge-ok'}">${isFail ? 'FAILED' : 'RECOVERED'}</span>
-        <span class="log-date">${date}</span>
-        ${issue ? `<span class="log-issue">${issue}</span>` : ''}
-        ${dur    ? `<span class="log-dur">${dur}</span>`    : ''}
-    </div>
-</div>`;
-        }).join('');
-
-        const historySection = records.length
-            ? `<div class="log-section-label">Backend Event History</div><div class="log-list">${historyItems}</div>`
-            : `<div class="log-empty">No backend events yet — history will appear here when the service goes down or recovers.</div>`;
-
-        panel.innerHTML = `
-<div class="log-section-label">Current Status</div>
-<div class="log-list">${liveEntry}</div>
-${historySection}`;
-
-        // Core API: append live server logs from the AI backend's in-memory buffer
-        if (serviceId === 'core_api') {
-            this._appendServerLogs(panel, isDown);
-        }
-    }
-
-    async _appendServerLogs(panel, isDown) {
-        const label = document.createElement('div');
-        label.className = 'log-section-label';
-        label.textContent = 'Live Server Logs (Render)';
-        panel.appendChild(label);
-
-        const box = document.createElement('div');
-        box.className = 'render-log-box';
-        box.textContent = 'Fetching…';
-        panel.appendChild(box);
-
-        // Classify a log line using Render's own level label, with keyword fallback
-        const classify = (e) => {
-            const lvl = (e.level || '').toLowerCase();
-            const ml  = (e.message || '').toLowerCase();
-            if (lvl === 'error' || lvl === 'critical' || /traceback|exception|killed/.test(ml)) return 'rlog-error';
-            if (lvl === 'warning' || lvl === 'warn') return 'rlog-warn';
-            if (/application startup complete|uvicorn running|started server|your service is live/.test(ml)) return 'rlog-ok';
-            return 'rlog-info';
-        };
-
-        try {
-            const res  = await api.getRenderLogs(150);
-            const logs = res?.data || [];
-
-            if (!logs.length) {
-                box.textContent = 'No logs returned from Render.';
-                return;
-            }
-
-            // When down: bubble error lines to the top so you see the cause immediately
-            const display = isDown
-                ? [...logs.filter(e => classify(e) === 'rlog-error'), ...logs]
-                : logs;
-
-            box.innerHTML = display.slice(0, 150).map(e => {
-                const msg = e.message || '';
-                const ts  = e.timestamp ? new Date(e.timestamp).toLocaleTimeString() : '';
-                return `<div class="rlog-line ${classify(e)}"><span class="rlog-ts">${ts}</span><span class="rlog-msg">${this._esc(msg)}</span></div>`;
-            }).join('');
-        } catch (err) {
-            box.textContent = `Could not load logs: ${err.message}`;
-        }
-    }
-
-    _esc(s) {
-        return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
 
     // ── Actions ───────────────────────────────────────────────────────────────
@@ -529,7 +371,6 @@ ${historySection}`;
             btn.dataset.confirming = 'true';
             btn.textContent = 'Confirm? Click again';
             btn.style.background = 'rgba(239,68,68,0.35)';
-            // Auto-cancel after 4 seconds
             this._clearConfirmTimer = setTimeout(() => {
                 btn.dataset.confirming = '';
                 btn.textContent = '🗑 Clear Logs';
@@ -546,10 +387,7 @@ ${historySection}`;
         btn.style.background = '';
 
         api.clearLogs()
-            .then(() => {
-                this.expandedLogs.clear();
-                return this.loadAll();
-            })
+            .then(() => this.loadAll())
             .then(() => this.showAlert('Logs cleared successfully.', 'success'))
             .catch(() => this.showAlert('Failed to clear logs.', 'error'))
             .finally(() => {
