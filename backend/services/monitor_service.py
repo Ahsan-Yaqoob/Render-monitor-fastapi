@@ -89,8 +89,8 @@ class MonitorService:
         Returns tuple: (status_changed, current_status)
         """
         try:
+            current_time = get_current_timestamp()  # set first so it's always available in except
             is_running, issue_type, error_msg = self.render_checker.check_service_status()
-            current_time = get_current_timestamp()
 
             logger.info(f"Service check result: running={is_running}, issue={issue_type}")
 
@@ -126,6 +126,7 @@ class MonitorService:
 
         except Exception as e:
             logger.error(f"Error in check_and_update_status: {e}")
+            self.current_state['last_check_time'] = current_time
             return (False, self.current_state.get('last_status', 'UNKNOWN'))
 
     def _store_error_logs(self):

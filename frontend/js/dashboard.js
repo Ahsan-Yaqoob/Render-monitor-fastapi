@@ -303,7 +303,9 @@ class StatusDashboard {
         if (sub) {
             const lastCheck = globalStatus?.data?.last_check_time;
             if (lastCheck) {
-                const ago = Math.round((Date.now() - new Date(lastCheck).getTime()) / 60000);
+                // Append 'Z' if no timezone info so browser treats it as UTC (not local time)
+                const ts  = /[+Z]/i.test(lastCheck) ? lastCheck : lastCheck + 'Z';
+                const ago = Math.round((Date.now() - new Date(ts).getTime()) / 60000);
                 sub.textContent = ago < 2 ? 'Checked just now' : `Last checked ${ago} minute${ago !== 1 ? 's' : ''} ago`;
             } else {
                 sub.textContent = 'Monitoring active';

@@ -1,13 +1,12 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 def get_current_timestamp():
-    """Get current timestamp in ISO format."""
-    return datetime.now().isoformat()
+    """Current time as UTC-aware ISO string (e.g. 2026-06-19T10:00:00+00:00)."""
+    return datetime.now(timezone.utc).isoformat()
 
 
 def parse_timestamp(timestamp_str):
-    """Parse ISO timestamp string to datetime object."""
     try:
         return datetime.fromisoformat(timestamp_str)
     except (ValueError, TypeError):
@@ -15,63 +14,45 @@ def parse_timestamp(timestamp_str):
 
 
 def calculate_duration(start_time, end_time):
-    """Calculate duration between two timestamps in minutes."""
+    """Duration between two timestamps in minutes. Handles mixed naive/aware datetimes."""
     try:
         if isinstance(start_time, str):
             start_time = parse_timestamp(start_time)
         if isinstance(end_time, str):
             end_time = parse_timestamp(end_time)
-        
-        if start_time and end_time:
-            delta = end_time - start_time
-            return delta.total_seconds() / 60
-        return 0
+        if not (start_time and end_time):
+            return 0
+        # Normalize both to the same timezone awareness
+        if start_time.tzinfo is not None and end_time.tzinfo is None:
+            end_time = end_time.replace(tzinfo=timezone.utc)
+        elif start_time.tzinfo is None and end_time.tzinfo is not None:
+            start_time = start_time.replace(tzinfo=timezone.utc)
+        return max(0, (end_time - start_time).total_seconds() / 60)
     except Exception:
         return 0
 
 
 def format_duration_readable(minutes):
-    """Format duration in minutes to readable format (e.g., '2h 30m')."""
     if minutes < 1:
         return "< 1 min"
-    
     hours = int(minutes // 60)
-    mins = int(minutes % 60)
-    
-    if hours == 0:
-        return f"{mins}m"
-    elif mins == 0:
-        return f"{hours}h"
-    else:
-        return f"{hours}h {mins}m"
+    mins  = int(minutes % 60)
+    if hours == 0:    return f"{mins}m"
+    if mins  == 0:    return f"{hours}h"
+    return f"{hours}h {mins}m"
 
 
 def time_ago(timestamp_str):
-    """Get human-readable time difference (e.g., '2 hours ago')."""
+    """Human-readable time since timestamp. Handles both naive and UTC-aware strings."""
     try:
-        if isinstance(timestamp_str, str):
-            dt = parse_timestamp(timestamp_str)
-        else:
-            dt = timestamp_str
-        
+        dt = parse_timestamp(timestamp_str) if isinstance(timestamp_str, str) else timestamp_str
         if not dt:
             return "Unknown"
-        
-        now = datetime.now()
-        diff = now - dt
-        
-        seconds = diff.total_seconds()
-        
-        if seconds < 60:
-            return f"{int(seconds)}s ago"
-        elif seconds < 3600:
-            minutes = int(seconds / 60)
-            return f"{minutes}m ago"
-        elif seconds < 86400:
-            hours = int(seconds / 3600)
-            return f"{hours}h ago"
-        else:
-            days = int(seconds / 86400)
-            return f"{days}d ago"
+        now = datetime.now(timezone.utc) if dt.tzinfo else datetime.now()
+        seconds = max(0, (now - dt).total_seconds())
+        if seconds < 60:    return f"{int(seconds)}s ago"
+        if seconds < 3600:  return f"{int(seconds / 60)}m ago"
+        if seconds < 86400: return f"{int(seconds / 3600)}h ago"
+        return f"{int(seconds / 86400)}d ago"
     except Exception:
         return "Unknown"
