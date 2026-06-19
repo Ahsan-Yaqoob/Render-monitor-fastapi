@@ -26,6 +26,7 @@ class Settings:
         # validation below fails loudly rather than using a wrong value.
         self.MONITOR_SERVICE_ID = self._clean(os.getenv('MONITOR_SERVICE_ID'))
         self.AI_BACKEND_URL    = self._clean(os.getenv('AI_BACKEND_URL') or '').rstrip('/')
+        self.SELF_URL          = self._clean(os.getenv('SELF_URL') or '').rstrip('/')
         self.EMAIL_SENDER = self._clean(os.getenv('EMAIL_SENDER'))
         self.EMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD')  # app passwords may contain spaces — don't strip
         self.EMAIL_RECEIVER = self._clean(os.getenv('EMAIL_RECEIVER'))

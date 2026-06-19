@@ -5,6 +5,7 @@ from backend.services.monitor_service import get_monitor_service
 from backend.utils.logger import logger
 from backend.config.settings import settings
 import threading
+import requests as _requests
 
 
 class MonitorScheduler:
@@ -32,7 +33,17 @@ class MonitorScheduler:
                 name='Service Status Monitor',
                 misfire_grace_time=15
             )
-            
+
+            if settings.SELF_URL:
+                self.scheduler.add_job(
+                    self._self_ping,
+                    IntervalTrigger(minutes=5),
+                    id='self_ping',
+                    name='Keep-alive self ping',
+                    misfire_grace_time=30
+                )
+                logger.info(f"Keep-alive ping scheduled every 5 min → {settings.SELF_URL}")
+
             self.scheduler.start()
             self.is_running = True
             logger.info(f"Scheduler started. Check interval: {self.check_interval} minutes")
@@ -80,6 +91,14 @@ class MonitorScheduler:
             except Exception as e:
                 logger.error(f"Error in scheduled check: {str(e)}")
     
+    def _self_ping(self):
+        """Hit our own /api/health endpoint to prevent Render free-tier spin-down."""
+        try:
+            r = _requests.get(f"{settings.SELF_URL}/api/health", timeout=10)
+            logger.info(f"[keep-alive] OK — HTTP {r.status_code}")
+        except Exception as e:
+            logger.warning(f"[keep-alive] ping failed: {e}")
+
     def get_status(self):
         """Get scheduler status."""
         return {

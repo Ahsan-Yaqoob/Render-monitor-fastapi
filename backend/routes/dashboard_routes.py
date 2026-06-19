@@ -89,17 +89,32 @@ def get_daily_history(days: int = Query(90, ge=1, le=365)):
         return {'success': False, 'error': str(e), 'data': []}
 
 
-@router.get("/logs/errors")
-def get_error_logs(days: int = Query(4, ge=1, le=7)):
+@router.get("/logs/history")
+def get_log_history(days: int = Query(4, ge=1, le=7)):
     """
-    Return stored error/warn log lines from Supabase (last N days).
-    Used by the Errors & Warnings section of the logs page for multi-day history.
-    Falls back to empty list when Supabase is not configured.
+    Return all stored log lines from Supabase for the last N days.
+    Used by the Live Server Logs box to show historical data beyond the 30-min Render window.
     """
     try:
         if not monitor_service.db.is_available():
             return {'success': True, 'data': [], 'source': 'unavailable'}
         logs = monitor_service.db.get_logs(days=days)
+        return {'success': True, 'data': logs, 'total': len(logs), 'days': days}
+    except Exception as e:
+        logger.error(f"Error getting log history: {e}")
+        return {'success': False, 'error': str(e), 'data': []}
+
+
+@router.get("/logs/errors")
+def get_error_logs(days: int = Query(30, ge=1, le=30)):
+    """
+    Return stored error/warn log lines from Supabase (last N days, up to 30).
+    Used by the Errors & Warnings section of the logs page.
+    """
+    try:
+        if not monitor_service.db.is_available():
+            return {'success': True, 'data': [], 'source': 'unavailable'}
+        logs = monitor_service.db.get_error_logs(days=days)
         return {'success': True, 'data': logs, 'total': len(logs), 'days': days}
     except Exception as e:
         logger.error(f"Error getting error logs: {e}")
@@ -173,6 +188,18 @@ async def trigger_manual_check():
         }
     except Exception as e:
         logger.error(f"Error triggering manual check: {e}")
+        return {'success': False, 'error': str(e)}
+
+
+@router.post("/logs/clear-errors")
+def clear_error_logs():
+    """Clear all stored log lines from monitor_logs (leaves events/daily/state intact)."""
+    try:
+        if monitor_service.db.is_available():
+            monitor_service.db.clear_logs()
+        return {'success': True, 'message': 'Error logs cleared'}
+    except Exception as e:
+        logger.error(f"Error clearing error logs: {e}")
         return {'success': False, 'error': str(e)}
 
 

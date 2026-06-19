@@ -24,7 +24,7 @@ except ImportError:
 _STATE_ROW_ID = 1          # monitor_state always has exactly one row
 _EVENTS_DAYS  = 30         # purge events older than this
 _DAILY_DAYS   = 90         # purge daily rows older than this
-_LOGS_DAYS    = 4          # purge log lines older than this
+_LOGS_DAYS    = 30         # purge log lines older than this (errors visible 30 days)
 
 _purge_done_for: str = ''  # date string — run purge at most once per day
 
@@ -230,10 +230,10 @@ class SupabaseHandler:
         except Exception as exc:
             logger.error(f"DB purge_old_daily: {exc}")
 
-    # ── Error / warn log lines (4-day rolling window) ─────────────────────────
+    # ── Log lines (30-day rolling window) ────────────────────────────────────
 
     def add_logs(self, log_entries: list[dict]) -> None:
-        """Store error/warn lines. Render's log id deduplicates on re-fetch."""
+        """Store all log lines. Render's log id deduplicates on re-fetch."""
         if not self._client or not log_entries:
             return
         try:
@@ -255,6 +255,7 @@ class SupabaseHandler:
             logger.error(f"DB add_logs: {exc}")
 
     def get_logs(self, days: int = 4, limit: int = 5000) -> list[dict]:
+        """Return all stored log lines for the last N days (for the live log history view)."""
         if not self._client:
             return []
         try:
@@ -268,6 +269,24 @@ class SupabaseHandler:
             return res.data or []
         except Exception as exc:
             logger.error(f"DB get_logs: {exc}")
+            return []
+
+    def get_error_logs(self, days: int = 30, limit: int = 5000) -> list[dict]:
+        """Return only error/warn lines for the last N days (for the Errors & Warnings section)."""
+        if not self._client:
+            return []
+        try:
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+            res = (self._client.table('monitor_logs')
+                   .select('*')
+                   .gte('timestamp', cutoff)
+                   .in_('level', ['error', 'critical', 'warning', 'warn'])
+                   .order('timestamp', desc=True)
+                   .limit(limit)
+                   .execute())
+            return res.data or []
+        except Exception as exc:
+            logger.error(f"DB get_error_logs: {exc}")
             return []
 
     def clear_logs(self) -> None:

@@ -33,7 +33,9 @@ class APIClient {
     getDailyHistory(days = 90)      { return this.request(`/history/daily?days=${days}`); }
     getServicesHealth()             { return this.request('/services/health'); }
     getRenderLogs(limit = 2000)     { return this.request(`/render-logs?limit=${limit}`); }
-    getErrorLogs(days = 4)          { return this.request(`/logs/errors?days=${days}`); }
+    getLogHistory(days = 4)         { return this.request(`/logs/history?days=${days}`); }
+    getErrorLogs(days = 30)         { return this.request(`/logs/errors?days=${days}`); }
+    clearErrorLogs()                { return this.request('/logs/clear-errors', { method: 'POST' }); }
     triggerManualCheck()            { return this.request('/monitor/check', { method: 'POST' }); }
     clearLogs()                     { return this.request('/monitor/clear-logs', { method: 'POST' }); }
 }

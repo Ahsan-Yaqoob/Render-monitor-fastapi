@@ -823,6 +823,40 @@ footer {
 .error-time { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
 .error-empty { color: var(--green); font-size: 13px; padding: 6px 2px; }
 
+/* Clear button in errors title */
+.err-clear-btn {
+    margin-left: auto;
+    padding: 2px 10px;
+    font-size: 11px;
+    height: 24px;
+    line-height: 1;
+}
+
+/* Error date groups */
+.err-group { border: none; margin-bottom: 4px; }
+.err-group-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 4px;
+    cursor: pointer;
+    list-style: none;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 6px;
+    user-select: none;
+}
+.err-group-header::-webkit-details-marker { display: none; }
+.err-group-arrow {
+    font-size: 9px;
+    color: var(--text-muted);
+    display: inline-block;
+    transition: transform 0.18s;
+}
+details[open] > .err-group-header .err-group-arrow { transform: rotate(90deg); }
+.err-group-label { font-size: 13px; font-weight: 600; color: var(--text); }
+.err-group-badge { font-size: 11px; color: var(--text-muted); margin-left: auto; }
+.err-group-items { display: flex; flex-direction: column; gap: 6px; padding-bottom: 8px; }
+
 /* Outage history list */
 .outage-list { display: flex; flex-direction: column; gap: 6px; }
 .outage-item {

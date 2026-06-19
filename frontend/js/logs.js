@@ -5,7 +5,7 @@
 
 class LogsPage {
     constructor() {
-        this.logs        = [];    // normalized log entries, newest first (30-min live window)
+        this.logs        = [];    // merged log entries: DB 4-day history + live Render window
         this.win         = null;  // window minutes reported by the backend
         this.err         = null;  // fetch error message, if any
         this.filter      = 'all';
@@ -13,8 +13,9 @@ class LogsPage {
         this.stick       = true;  // follow newest line at the bottom
         this.scroll      = null;
         this.isLoading   = false;
-        this._dbErrorLogs = null; // stored error/warn lines from Supabase (4 days), or null
-        this._dbErrorDays = 4;
+        this._hasDBHistory = false;   // true when DB returned 4-day log history
+        this._dbErrorLogs  = null;    // stored error/warn lines from Supabase (30 days), or null
+        this._dbErrorDays  = 30;
         this.init();
     }
 
@@ -50,6 +51,7 @@ class LogsPage {
     setupEvents() {
         document.getElementById('themeToggleBtn')?.addEventListener('click', () => this.toggleTheme());
         document.getElementById('refreshBtn')?.addEventListener('click', () => this.loadAll());
+        document.getElementById('clearErrorsBtn')?.addEventListener('click', () => this.clearErrors());
         window.addEventListener('visibilitychange', () => { if (!document.hidden) this.loadAll(); });
 
         document.querySelectorAll('.slog-chip').forEach(chip => {
@@ -88,32 +90,52 @@ class LogsPage {
     }
 
     async loadLogs() {
-        try {
-            const res  = await api.getRenderLogs();
-            const data = res?.data || [];
-            // Don't wipe good logs if a refresh comes back empty (transient rate-limit)
-            if (data.length || !this.logs.length) this.logs = data;
-            this.win = res?.window_minutes;
+        // Load DB 4-day history and live Render window in parallel
+        const [dbRes, liveRes] = await Promise.allSettled([
+            api.getLogHistory(4),
+            api.getRenderLogs()
+        ]);
+
+        const dbLogs   = (dbRes.status === 'fulfilled'   && dbRes.value?.success)   ? (dbRes.value.data   || []) : [];
+        const liveLogs = (liveRes.status === 'fulfilled' && liveRes.value?.success) ? (liveRes.value.data || []) : [];
+
+        this._hasDBHistory = dbLogs.length > 0;
+        this.win = liveRes.status === 'fulfilled' ? liveRes.value?.window_minutes : this.win;
+
+        const merged = this._mergeLogs(dbLogs, liveLogs);
+        if (merged.length || !this.logs.length) this.logs = merged;
+
+        if (!this.logs.length) {
+            this.err = liveRes.status === 'rejected' ? liveRes.reason?.message : null;
+        } else {
             this.err = null;
-        } catch (e) {
-            if (!this.logs.length) this.err = e.message;
         }
+
         this.renderLogLines();
-        // Render error list using whichever source we already have
         this.renderErrorList(this._dbErrorLogs);
+    }
+
+    _mergeLogs(dbLogs, liveLogs) {
+        const seen = new Set();
+        const out  = [];
+        for (const e of [...dbLogs, ...liveLogs]) {
+            const key = e.id || `${e.timestamp}:${e.message}`;
+            if (!seen.has(key)) { seen.add(key); out.push(e); }
+        }
+        return out.sort((a, b) => a.timestamp < b.timestamp ? 1 : -1);
     }
 
     async loadErrorLogs() {
         try {
-            const res = await api.getErrorLogs(4);
-            if (res?.success && res.data?.length) {
-                this._dbErrorLogs = res.data;    // stored 4-day history from Supabase
-                this._dbErrorDays = res.days || 4;
-                this.renderErrorList(res.data);
+            const res = await api.getErrorLogs(30);
+            if (res?.success) {
+                this._dbErrorLogs = res.data || [];
+                this._dbErrorDays = res.days || 30;
+                this.renderErrorList(this._dbErrorLogs);
                 return;
             }
         } catch {}
-        // Supabase not configured or empty — fall back to filtering live 30-min logs
+        // Supabase not configured or empty — fall back to filtering current logs
         this._dbErrorLogs = null;
         this.renderErrorList(null);
     }
@@ -160,7 +182,9 @@ class LogsPage {
             if (stats) stats.innerHTML = '';
             return;
         }
-        if (sub) sub.textContent = `Render${this.win ? ' · last ' + this.win + ' min' : ''}`;
+        if (sub) sub.textContent = this._hasDBHistory
+            ? `Render · last 4 days`
+            : `Render${this.win ? ' · last ' + this.win + ' min' : ''}`;
         if (!this.logs.length) {
             box.innerHTML = `<div class="rlog-placeholder">No logs returned from Render.</div>`;
             if (stats) stats.innerHTML = '';
@@ -208,9 +232,7 @@ class LogsPage {
              +  `</div>`;
     }
 
-    // ── Errors & warnings list (newest first) ────────────────────────────────────
-    // When dbRows is provided (from Supabase), shows 4-day history.
-    // When null, falls back to filtering the current 30-min live log window.
+    // ── Errors & warnings list — grouped by date, collapsible ───────────────────
 
     renderErrorList(dbRows) {
         const list  = document.getElementById('errorList');
@@ -222,17 +244,14 @@ class LogsPage {
         let windowLabel;
 
         if (dbRows && dbRows.length) {
-            // DB path: rows already are error/warn lines; classify them
             errors      = dbRows.map(e => ({ e, c: this.classify(e) }));
-            windowLabel = `${this._dbErrorDays} day${this._dbErrorDays !== 1 ? 's' : ''}`;
+            windowLabel = `${this._dbErrorDays} days`;
         } else if (!dbRows) {
-            // Fallback: filter live 30-min logs
             errors      = this.logs.map(e => ({ e, c: this.classify(e) })).filter(r => r.c === 'error' || r.c === 'warn');
             windowLabel = `${this.win || 30} minutes`;
         } else {
-            // DB returned empty
             errors      = [];
-            windowLabel = `${this._dbErrorDays} day${this._dbErrorDays !== 1 ? 's' : ''}`;
+            windowLabel = `${this._dbErrorDays} days`;
         }
 
         if (dot)   dot.className = 'srv-logs-dot ' + (errors.some(r => r.c === 'error') ? 'err' : errors.length ? 'warn' : 'ok');
@@ -243,16 +262,65 @@ class LogsPage {
             return;
         }
 
-        list.innerHTML = errors.slice(0, 500).map(({ e, c }) => {
-            const ts = e.timestamp ? new Date(e.timestamp).toLocaleString() : '';
-            return `<div class="error-item error-${c}">`
-                 +    `<span class="rlog-badge rlog-badge-${c}">${c === 'error' ? 'ERR' : 'WARN'}</span>`
-                 +    `<div class="error-body">`
-                 +        `<div class="error-msg">${this.fmtMsg(e.message || '')}</div>`
-                 +        `<div class="error-time">${ts}</div>`
-                 +    `</div>`
-                 +  `</div>`;
+        // Group by date label
+        const today = new Date();
+        const todayStr = today.toDateString();
+        const yest    = new Date(today); yest.setDate(today.getDate() - 1);
+        const yestStr = yest.toDateString();
+
+        const groups = new Map();   // label → [{e, c}]
+        for (const row of errors.slice(0, 500)) {
+            const d  = row.e.timestamp ? new Date(row.e.timestamp) : new Date();
+            const ds = d.toDateString();
+            const label = ds === todayStr ? 'Today'
+                        : ds === yestStr  ? 'Yesterday'
+                        : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+            if (!groups.has(label)) groups.set(label, []);
+            groups.get(label).push(row);
+        }
+
+        list.innerHTML = [...groups.entries()].map(([label, rows], idx) => {
+            const errN = rows.filter(r => r.c === 'error').length;
+            const warN = rows.filter(r => r.c === 'warn').length;
+            const badge = [
+                errN ? `${errN} error${errN > 1 ? 's' : ''}` : '',
+                warN ? `${warN} warning${warN > 1 ? 's' : ''}` : '',
+            ].filter(Boolean).join(' · ');
+
+            const items = rows.map(({ e, c }) => {
+                const ts = e.timestamp ? new Date(e.timestamp).toLocaleTimeString() : '';
+                return `<div class="error-item error-${c}">`
+                     +   `<span class="rlog-badge rlog-badge-${c}">${c === 'error' ? 'ERR' : 'WARN'}</span>`
+                     +   `<div class="error-body">`
+                     +     `<div class="error-msg">${this.fmtMsg(e.message || '')}</div>`
+                     +     `<div class="error-time">${ts}</div>`
+                     +   `</div>`
+                     + `</div>`;
+            }).join('');
+
+            return `<details class="err-group" ${idx === 0 ? 'open' : ''}>`
+                 +   `<summary class="err-group-header">`
+                 +     `<span class="err-group-arrow">▶</span>`
+                 +     `<span class="err-group-label">${label}</span>`
+                 +     `<span class="err-group-badge">${badge}</span>`
+                 +   `</summary>`
+                 +   `<div class="err-group-items">${items}</div>`
+                 + `</details>`;
         }).join('');
+    }
+
+    async clearErrors() {
+        const btn = document.getElementById('clearErrorsBtn');
+        if (btn) btn.disabled = true;
+        try {
+            await api.clearErrorLogs();
+            this._dbErrorLogs = [];
+            this.renderErrorList([]);
+        } catch (e) {
+            console.error('Failed to clear errors:', e);
+        } finally {
+            if (btn) btn.disabled = false;
+        }
     }
 
     // ── Outage history (FAILED / RECOVERED events) ───────────────────────────────

@@ -129,19 +129,15 @@ class MonitorService:
             return (False, self.current_state.get('last_status', 'UNKNOWN'))
 
     def _store_error_logs(self):
-        """Capture error/warn lines from the last Render log fetch and persist them."""
+        """Store all log lines from the last Render fetch (deduped by id, 30-day retention)."""
         if not self.db.is_available():
             return
         try:
             logs = self.render_checker.fetch_recent()   # uses cache — no extra API call
-            error_warn = [
-                e for e in logs
-                if (e.get('level') or '').lower() in ('error', 'critical', 'warning', 'warn')
-            ]
-            if error_warn:
-                self.db.add_logs(error_warn)
+            if logs:
+                self.db.add_logs(logs)
         except Exception as exc:
-            logger.error(f"Failed to store error logs: {exc}")
+            logger.error(f"Failed to store logs: {exc}")
 
     def _start_grace_period(self, service_name, failure_time, issue_type):
         logger.warning(
