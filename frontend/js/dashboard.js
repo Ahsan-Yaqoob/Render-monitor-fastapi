@@ -1,19 +1,17 @@
 // ── Config ────────────────────────────────────────────────────────────────────
-// Service definitions — IDs must match keys returned by /api/health/services.
-// Order: Core first, then the AI features (Quotation → Gemini text → Voice),
-// then the integrations (Maps → Image → File → Payment).
+// `group` lists the health API keys to combine into one card.
+// If any key in the group is down, the card shows down.
 const DEFAULT_SERVICES = [
     // Core
-    { id: 'core_api',        name: 'Core API',            desc: 'Main FastAPI backend — health & primary endpoints',        category: 'Core' },
-    // AI Features
-    { id: 'ai_features',     name: 'Quotation Chatbot',   desc: 'Quotation chatbot, analyzer & creator (Gemini)',           category: 'AI Features' },
-    { id: 'groq_agents',     name: 'Gemini Text Agents',  desc: 'Gemini-powered text completion & AI agents',               category: 'AI Features' },
-    { id: 'voice_agent',     name: 'Voice Agent',         desc: 'Browser Web Speech API (native — no external service)',    category: 'AI Features' },
+    { id: 'core_api',        name: 'Core API',       desc: 'Main FastAPI backend',                       category: 'Core' },
+    // AI Features — the 3 Gemini-powered services share the same health check so they're one card
+    { id: 'gemini_services', name: 'Gemini AI',      desc: 'Chatbot, text agents & image search',       category: 'AI Features',
+      group: ['ai_features', 'groq_agents', 'ai_image_search'] },
+    { id: 'voice_agent',     name: 'Voice Agent',    desc: 'Browser Web Speech API (native)',            category: 'AI Features' },
     // Integrations
-    { id: 'ai_maps',         name: 'AI Maps',             desc: 'Google Maps route & location search',                      category: 'Integrations' },
-    { id: 'ai_image_search', name: 'AI Image Search',     desc: 'AI-powered image discovery (Gemini)',                      category: 'Integrations' },
-    { id: 'file_extractor',  name: 'File Extractor',      desc: 'PDF, DOCX & Excel text extraction (local)',                category: 'Integrations' },
-    { id: 'payment_chatbot', name: 'Payment Chatbot',     desc: 'Make & receive payment agents — backed by Supabase database', category: 'Integrations' },
+    { id: 'ai_maps',         name: 'Google Maps',    desc: 'Route & location search',                   category: 'Integrations' },
+    { id: 'file_extractor',  name: 'File Extractor', desc: 'PDF, DOCX & Excel text extraction (local)', category: 'Integrations' },
+    { id: 'payment_chatbot', name: 'Supabase',        desc: 'Database health check',                     category: 'Integrations' },
 ];
 
 class StatusDashboard {
@@ -108,25 +106,46 @@ class StatusDashboard {
                 if (healthRes?.success) perServiceHealth = healthRes.data;
             } catch {}
 
-            // Build bars from global history (all services share the same backend)
+            // Build bars — prefer pre-computed daily data (Supabase), fall back to event-based
             const globalRecords = globalHistory?.data?.records || [];
-            const sharedBars    = this.buildBars(globalRecords, 90);
-            const sharedUptime  = this.calcUptime(sharedBars);
+            let sharedBars;
+            try {
+                const dailyRes = await api.getDailyHistory(90);
+                const dailyRows = dailyRes?.data || [];
+                sharedBars = dailyRows.length
+                    ? this.buildBarsFromDaily(dailyRows)
+                    : this.buildBars(globalRecords, 90);
+            } catch {
+                sharedBars = this.buildBars(globalRecords, 90);
+            }
+            const sharedUptime = this.calcUptime(sharedBars);
 
             for (const s of this.services) {
-                const id = s.id;
+                // `group` lets multiple health-API keys map to one card.
+                const ids = s.group || [s.id];
                 let currentStatus = 'unknown';
                 let healthDetail  = null;
-                if (perServiceHealth && id in perServiceHealth) {
-                    currentStatus = perServiceHealth[id].status === 'up' ? 'up' : 'down';
-                    healthDetail  = perServiceHealth[id].detail || null;
-                } else if (globalStatus?.data?.is_running === true)  {
-                    currentStatus = 'up';
-                } else if (globalStatus?.data?.is_running === false) {
-                    currentStatus = 'down';
+
+                if (perServiceHealth) {
+                    const anyDown = ids.some(k => perServiceHealth[k]?.status === 'down');
+                    const anyUp   = ids.some(k => perServiceHealth[k]?.status === 'up');
+                    if (anyDown) {
+                        currentStatus = 'down';
+                        const downKey = ids.find(k => perServiceHealth[k]?.status === 'down');
+                        healthDetail  = perServiceHealth[downKey]?.detail || null;
+                    } else if (anyUp) {
+                        currentStatus = 'up';
+                        const upKey  = ids.find(k => perServiceHealth[k]?.status === 'up');
+                        healthDetail  = perServiceHealth[upKey]?.detail || null;
+                    }
                 }
 
-                this.statusData[id] = {
+                if (currentStatus === 'unknown') {
+                    if (globalStatus?.data?.is_running === true)  currentStatus = 'up';
+                    if (globalStatus?.data?.is_running === false) currentStatus = 'down';
+                }
+
+                this.statusData[s.id] = {
                     currentStatus,
                     healthDetail,
                     bars:    sharedBars,
@@ -149,23 +168,33 @@ class StatusDashboard {
     // ── Bar data ──────────────────────────────────────────────────────────────
 
     buildBars(records, days = 90) {
-        const now = new Date();
-        const dayMap = new Map();
+        const todayStr = new Date().toISOString().slice(0, 10);
 
-        // Earliest record = monitoring start date
-        let monitorStart = null;
+        // Monitoring start = earliest event record date, default to today
+        let firstDate = todayStr;
         if (records.length > 0) {
             const dates = records.map(r => r.timestamp?.slice(0, 10)).filter(Boolean).sort();
-            if (dates.length) monitorStart = dates[0];
+            if (dates.length) firstDate = dates[0];
         }
 
-        for (let i = days - 1; i >= 0; i--) {
-            const d = new Date(now);
-            d.setDate(d.getDate() - i);
+        // Phase 1 (< 90 days running): fixed window [firstDate … firstDate+89]
+        //   → today is somewhere on the left, future days are gray on the right
+        // Phase 2 (≥ 90 days running): sliding window [today-89 … today]
+        //   → all bars have real data, window advances one day per day
+        const start = new Date(firstDate + 'T12:00:00');
+        const today = new Date(todayStr    + 'T12:00:00');
+        const daysSinceStart = Math.round((today - start) / 86400000);
+        const windowStart = daysSinceStart >= days
+            ? new Date(today.getTime() - (days - 1) * 86400000)
+            : start;
+
+        const dayMap = new Map();
+        for (let i = 0; i < days; i++) {
+            const d = new Date(windowStart.getTime() + i * 86400000);
             const key = d.toISOString().slice(0, 10);
             dayMap.set(key, {
                 date:      key,
-                status:    (monitorStart && key < monitorStart) ? 'nodata' : 'up',
+                status:    key > todayStr ? 'nodata' : 'up',
                 downtime:  0,
                 failCount: 0,
             });
@@ -175,6 +204,7 @@ class StatusDashboard {
             const key = r.timestamp?.slice(0, 10);
             if (!key || !dayMap.has(key)) continue;
             const day = dayMap.get(key);
+            if (day.status === 'nodata') continue;
             if (r.status === 'FAILED') {
                 day.failCount++;
                 day.downtime += r.duration || 0;
@@ -188,20 +218,57 @@ class StatusDashboard {
             }
         }
 
-        const allBars = [...dayMap.values()];
+        return [...dayMap.values()];
+    }
 
-        // Only show bars from monitoring start — bars grow day by day from today
-        const firstMonitored = allBars.findIndex(b => b.status !== 'nodata');
-        if (firstMonitored > 0) return allBars.slice(firstMonitored);
-        if (firstMonitored === -1) return allBars.slice(-1); // no data yet: just today
-        return allBars;
+    buildBarsFromDaily(rows, days = 90) {
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const rowMap   = new Map(rows.map(r => [r.date, r]));
+
+        // Monitoring start = first DB row date, default to today
+        const firstDate = rows.length ? rows[0].date : todayStr;
+
+        // Same two-phase window as buildBars()
+        const start = new Date(firstDate + 'T12:00:00');
+        const today = new Date(todayStr   + 'T12:00:00');
+        const daysSinceStart = Math.round((today - start) / 86400000);
+        const windowStart = daysSinceStart >= days
+            ? new Date(today.getTime() - (days - 1) * 86400000)
+            : start;
+
+        const bars = [];
+        for (let i = 0; i < days; i++) {
+            const d = new Date(windowStart.getTime() + i * 86400000);
+            const key = d.toISOString().slice(0, 10);
+
+            if (key > todayStr) {
+                bars.push({ date: key, status: 'nodata', downtime: 0, failCount: 0 });
+            } else if (rowMap.has(key)) {
+                const r = rowMap.get(key);
+                bars.push({ date: key, status: r.status || 'up', downtime: r.downtime_minutes || 0, failCount: r.down_checks || 0 });
+            } else {
+                bars.push({ date: key, status: 'nodata', downtime: 0, failCount: 0 });
+            }
+        }
+        return bars;
     }
 
     calcUptime(bars) {
         const monitored = bars.filter(b => b.status !== 'nodata');
         if (!monitored.length) return null;
-        const up  = monitored.filter(b => b.status === 'up').length;
-        const pct = (up / monitored.length) * 100;
+
+        // Use actual downtime minutes, not binary up/down per day.
+        // A partial outage of 5 min in a day = 99.65% uptime, not 0%.
+        const totalMinutes = monitored.length * 24 * 60;
+        const downMinutes  = monitored.reduce((sum, b) => {
+            if (b.status === 'up') return sum;
+            // full day down with no duration data → treat as full day
+            if (b.status === 'down')    return sum + (b.downtime > 0 ? b.downtime : 24 * 60);
+            // partial outage with no duration data → tiny penalty (won't floor to 0)
+            if (b.status === 'partial') return sum + (b.downtime > 0 ? b.downtime : 1);
+            return sum;
+        }, 0);
+        const pct = Math.max(0, ((totalMinutes - downMinutes) / totalMinutes) * 100);
         return pct >= 100 ? '100' : pct.toFixed(2);
     }
 
@@ -291,10 +358,14 @@ class StatusDashboard {
             return `<div class="uptime-bar bar-${b.status}" data-date="${b.date}" data-label="${lbl}"></div>`;
         }).join('');
 
-        const firstBar = bars[0];
-        const leftLabel = firstBar
-            ? new Date(firstBar.date + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-            : 'Today';
+        const todayStr  = new Date().toISOString().slice(0, 10);
+        const firstBar  = bars[0];
+        const lastBar   = bars[bars.length - 1];
+        const fmtDate   = d => new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        const leftLabel  = firstBar ? fmtDate(firstBar.date) : 'Today';
+        const rightLabel = !lastBar              ? 'Today'
+                         : lastBar.date === todayStr ? 'Today'
+                         : fmtDate(lastBar.date);
 
         const monitoredDays = bars.filter(b => b.status !== 'nodata').length;
         const uptimeTxt = uptime !== null
@@ -319,7 +390,7 @@ class StatusDashboard {
         <div class="uptime-labels">
             <span>${leftLabel}</span>
             <span class="uptime-pct">${uptimeTxt}</span>
-            <span>Today</span>
+            <span>${rightLabel}</span>
         </div>
     </div>
 </div>`;

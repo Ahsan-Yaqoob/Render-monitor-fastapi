@@ -16,6 +16,8 @@ class Settings:
         return value.strip().strip('"').strip("'").strip()
 
     def __init__(self):
+        self.SUPABASE_URL = self._clean(os.getenv('SUPABASE_URL'))
+        self.SUPABASE_KEY = self._clean(os.getenv('SUPABASE_KEY'))   # use the service_role key
         self.RENDER_API_KEY = self._clean(os.getenv('RENDER_API_KEY'))
         # IMPORTANT: read ONLY MONITOR_SERVICE_ID — never RENDER_SERVICE_ID.
         # 'RENDER_SERVICE_ID' is a RESERVED built-in var that Render auto-injects on every

@@ -4,6 +4,7 @@ from datetime import datetime
 from backend.services.render_checker import RenderChecker
 from backend.services.email_service import EmailService
 from backend.database.csv_handler import CSVHandler
+from backend.database.supabase_handler import SupabaseHandler
 from backend.database.models import ServiceStatusRecord, ServiceStatusSnapshot
 from backend.utils.logger import logger
 from backend.utils.helpers import get_current_timestamp, calculate_duration
@@ -23,13 +24,25 @@ class MonitorService:
 
     def __init__(self):
         self.render_checker = RenderChecker()
-        self.email_service = EmailService()
-        self.csv_handler = CSVHandler(settings.CSV_FILE_PATH)
-        self.current_state = self._load_state()
+        self.email_service  = EmailService()
+        self.csv_handler    = CSVHandler(settings.CSV_FILE_PATH)
+        self.db             = SupabaseHandler(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+        self.current_state  = self._load_state()
 
     # ── State persistence ────────────────────────────────────────────────────
 
     def _load_state(self):
+        # DB is the primary source — survives redeploys
+        if self.db.is_available():
+            state = self.db.get_state()
+            if state:
+                state.setdefault('recovery_email_sent', False)
+                state.setdefault('failure_confirmed', True)
+                state.setdefault('failure_issue_type', 'NONE')
+                logger.info("State loaded from Supabase")
+                return state
+
+        # Fall back to local JSON (lost on Render restart but fine for dev)
         try:
             with open(self.STATE_FILE, 'r') as f:
                 state = json.load(f)
@@ -45,24 +58,28 @@ class MonitorService:
 
     def _create_default_state(self):
         return {
-            'is_running': True,
-            'last_status': 'RUNNING',
-            'last_check_time': get_current_timestamp(),
-            'failure_start_time': None,
-            'last_recovery_time': None,
-            'email_alert_sent': False,
+            'is_running':          True,
+            'last_status':         'RUNNING',
+            'last_check_time':     get_current_timestamp(),
+            'failure_start_time':  None,
+            'last_recovery_time':  None,
+            'email_alert_sent':    False,
             'recovery_email_sent': False,
-            'failure_confirmed': True,    # True = real outage logged; False = in grace period
-            'failure_issue_type': 'NONE',
+            'failure_confirmed':   True,
+            'failure_issue_type':  'NONE',
         }
 
     def _save_state(self):
+        # Save to DB (persists across redeploys)
+        if self.db.is_available():
+            self.db.save_state(self.current_state)
+        # Always write local JSON as an in-process backup
         try:
             os.makedirs(os.path.dirname(self.STATE_FILE), exist_ok=True)
             with open(self.STATE_FILE, 'w') as f:
                 json.dump(self.current_state, f)
         except Exception as e:
-            logger.error(f"Error saving state: {e}")
+            logger.error(f"Error saving state JSON: {e}")
 
     # ── Core check logic ─────────────────────────────────────────────────────
 
@@ -77,27 +94,32 @@ class MonitorService:
 
             logger.info(f"Service check result: running={is_running}, issue={issue_type}")
 
-            previous_running   = self.current_state['is_running']
-            failure_confirmed  = self.current_state.get('failure_confirmed', True)
+            # Persist daily uptime data (1 check = 1 minute interval)
+            today = datetime.now().date().isoformat()
+            downtime_add = 1.0 if not is_running else 0.0
+            self.db.upsert_daily(today, is_running, downtime_add)
+
+            # Store error/warn log lines; also purge old DB records (once per day)
+            self._store_error_logs()
+            self.db.purge_old_records()
+
+            previous_running  = self.current_state['is_running']
+            failure_confirmed = self.current_state.get('failure_confirmed', True)
 
             if is_running:
                 if not previous_running:
                     return self._handle_service_recovery(service_name, current_time)
-                # Still running — update timestamp only
                 self.current_state['last_check_time'] = current_time
                 self._save_state()
                 return (False, 'RUNNING')
 
             # Service is down
             if previous_running:
-                # First failed check — start grace period, don't log yet
                 return self._start_grace_period(service_name, current_time, issue_type)
 
             if not failure_confirmed:
-                # Still down during grace period — confirm if grace elapsed
                 return self._evaluate_grace_period(service_name, current_time, issue_type)
 
-            # Already a confirmed outage — update timestamp only
             self.current_state['last_check_time'] = current_time
             self._save_state()
             return (False, 'FAILED')
@@ -106,8 +128,22 @@ class MonitorService:
             logger.error(f"Error in check_and_update_status: {e}")
             return (False, self.current_state.get('last_status', 'UNKNOWN'))
 
+    def _store_error_logs(self):
+        """Capture error/warn lines from the last Render log fetch and persist them."""
+        if not self.db.is_available():
+            return
+        try:
+            logs = self.render_checker.fetch_recent()   # uses cache — no extra API call
+            error_warn = [
+                e for e in logs
+                if (e.get('level') or '').lower() in ('error', 'critical', 'warning', 'warn')
+            ]
+            if error_warn:
+                self.db.add_logs(error_warn)
+        except Exception as exc:
+            logger.error(f"Failed to store error logs: {exc}")
+
     def _start_grace_period(self, service_name, failure_time, issue_type):
-        """First failure detected — wait GRACE_PERIOD_MINUTES before logging."""
         logger.warning(
             f"Service DOWN at {failure_time} — grace period started "
             f"({GRACE_PERIOD_MINUTES}m before logging)"
@@ -126,7 +162,6 @@ class MonitorService:
         return (False, 'FAILED')
 
     def _evaluate_grace_period(self, service_name, current_time, issue_type):
-        """Still down — confirm real outage once grace period elapses."""
         failure_start   = self.current_state.get('failure_start_time')
         downtime_so_far = calculate_duration(failure_start, current_time) if failure_start else 0
 
@@ -150,7 +185,6 @@ class MonitorService:
         return (False, 'FAILED')
 
     def _confirm_outage(self, service_name, failure_time, issue_type):
-        """Grace period elapsed — log FAILED event and send alert."""
         self.current_state['failure_confirmed'] = True
 
         record = ServiceStatusRecord(
@@ -162,7 +196,10 @@ class MonitorService:
             duration=0,
             resolved_at=None
         )
-        self.csv_handler.add_record(record)
+        if self.db.is_available():
+            self.db.add_event(record)
+        else:
+            self.csv_handler.add_record(record)
 
         if not self.current_state.get('email_alert_sent'):
             if self.email_service.send_service_down_alert(service_name, failure_time, issue_type):
@@ -174,11 +211,9 @@ class MonitorService:
         return (True, 'FAILED')
 
     def _handle_service_recovery(self, service_name, recovery_time):
-        """Handle service coming back up."""
         failure_confirmed = self.current_state.get('failure_confirmed', True)
 
         if not failure_confirmed:
-            # Recovered within grace period — silent reset (deploy restart / brief blip)
             logger.info(
                 "Service recovered within grace period — "
                 "treating as deploy restart, no log or email"
@@ -195,7 +230,6 @@ class MonitorService:
             self._save_state()
             return (False, 'RUNNING')
 
-        # Guard: only send recovery email once per outage
         if self.current_state.get('recovery_email_sent'):
             logger.info("Recovery email already sent — skipping duplicate")
             self.current_state.update({
@@ -229,7 +263,10 @@ class MonitorService:
             duration=downtime_minutes,
             resolved_at=recovery_time
         )
-        self.csv_handler.add_record(record)
+        if self.db.is_available():
+            self.db.add_event(record)
+        else:
+            self.csv_handler.add_record(record)
 
         if self.email_service.send_service_recovered_alert(service_name, recovery_time, downtime_minutes):
             logger.info("Recovery alert email sent")
@@ -268,10 +305,22 @@ class MonitorService:
                 issue_type='NONE'
             )
 
-    def get_history(self):
+    def get_history(self, days: int = 90):
+        """Return FAILED/RECOVERED events. Prefers DB; falls back to CSV."""
         try:
+            if self.db.is_available():
+                events = self.db.get_events(days=days)
+                return [{
+                    'id':           e.get('id', ''),
+                    'timestamp':    e.get('timestamp', ''),
+                    'service_name': e.get('service_name', ''),
+                    'status':       e.get('status', ''),
+                    'issue_type':   e.get('issue_type', ''),
+                    'duration':     e.get('duration', 0),
+                    'resolved_at':  e.get('resolved_at') or '',
+                } for e in events]
             records = self.csv_handler.read_all_records()
-            return [record.to_dict() for record in records]
+            return [r.to_dict() for r in records]
         except Exception as e:
             logger.error(f"Error getting history: {e}")
             return []
@@ -279,7 +328,21 @@ class MonitorService:
     def reset_state(self):
         self.current_state = self._create_default_state()
         self._save_state()
+        if self.db.is_available():
+            self.db.reset_state()
         logger.info("Monitor state reset")
+
+    def clear_all_data(self):
+        """Clear all stored data — events, daily, logs — and reset state."""
+        if self.db.is_available():
+            self.db.clear_events()
+            self.db.clear_daily()
+            self.db.clear_logs()
+            self.db.reset_state()
+        self.csv_handler.clear_all_records()
+        self.current_state = self._create_default_state()
+        self._save_state()
+        logger.info("All monitor data cleared")
 
 
 # ── Singleton ────────────────────────────────────────────────────────────────
@@ -288,7 +351,6 @@ _monitor_instance = None
 
 
 def get_monitor_service():
-    """Return the shared MonitorService singleton."""
     global _monitor_instance
     if _monitor_instance is None:
         _monitor_instance = MonitorService()

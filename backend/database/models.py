@@ -47,19 +47,6 @@ class ServiceStatusRecord:
         ]
     
     @classmethod
-    def from_dict(cls, data):
-        """Create record from dictionary."""
-        return cls(
-            id=data.get('id', ''),
-            timestamp=data.get('timestamp', ''),
-            service_name=data.get('service_name', ''),
-            status=data.get('status', ''),
-            issue_type=data.get('issue_type', ''),
-            duration=float(data.get('duration', 0)),
-            resolved_at=data.get('resolved_at', None)
-        )
-    
-    @classmethod
     def from_csv_row(cls, row):
         """Create record from CSV row."""
         return cls(

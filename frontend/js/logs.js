@@ -5,14 +5,16 @@
 
 class LogsPage {
     constructor() {
-        this.logs   = [];        // normalized log entries, newest first
-        this.win    = null;      // window minutes reported by the backend
-        this.err    = null;      // fetch error message, if any
-        this.filter = 'all';
-        this.search = '';
-        this.stick  = true;      // follow newest line at the bottom
-        this.scroll = null;
-        this.isLoading = false;
+        this.logs        = [];    // normalized log entries, newest first (30-min live window)
+        this.win         = null;  // window minutes reported by the backend
+        this.err         = null;  // fetch error message, if any
+        this.filter      = 'all';
+        this.search      = '';
+        this.stick       = true;  // follow newest line at the bottom
+        this.scroll      = null;
+        this.isLoading   = false;
+        this._dbErrorLogs = null; // stored error/warn lines from Supabase (4 days), or null
+        this._dbErrorDays = 4;
         this.init();
     }
 
@@ -78,7 +80,7 @@ class LogsPage {
         if (this.isLoading) return;
         this.isLoading = true;
         try {
-            await Promise.all([this.loadLogs(), this.loadOutages()]);
+            await Promise.all([this.loadLogs(), this.loadErrorLogs(), this.loadOutages()]);
             this.updateRefreshTime();
         } finally {
             this.isLoading = false;
@@ -97,7 +99,23 @@ class LogsPage {
             if (!this.logs.length) this.err = e.message;
         }
         this.renderLogLines();
-        this.renderErrorList();
+        // Render error list using whichever source we already have
+        this.renderErrorList(this._dbErrorLogs);
+    }
+
+    async loadErrorLogs() {
+        try {
+            const res = await api.getErrorLogs(4);
+            if (res?.success && res.data?.length) {
+                this._dbErrorLogs = res.data;    // stored 4-day history from Supabase
+                this._dbErrorDays = res.days || 4;
+                this.renderErrorList(res.data);
+                return;
+            }
+        } catch {}
+        // Supabase not configured or empty — fall back to filtering live 30-min logs
+        this._dbErrorLogs = null;
+        this.renderErrorList(null);
     }
 
     async loadOutages() {
@@ -191,26 +209,41 @@ class LogsPage {
     }
 
     // ── Errors & warnings list (newest first) ────────────────────────────────────
+    // When dbRows is provided (from Supabase), shows 4-day history.
+    // When null, falls back to filtering the current 30-min live log window.
 
-    renderErrorList() {
+    renderErrorList(dbRows) {
         const list  = document.getElementById('errorList');
         const count = document.getElementById('errCount');
         const dot   = document.getElementById('errDot');
         if (!list) return;
 
-        const errors = this.logs
-            .map(e => ({ e, c: this.classify(e) }))
-            .filter(r => r.c === 'error' || r.c === 'warn');
+        let errors;
+        let windowLabel;
+
+        if (dbRows && dbRows.length) {
+            // DB path: rows already are error/warn lines; classify them
+            errors      = dbRows.map(e => ({ e, c: this.classify(e) }));
+            windowLabel = `${this._dbErrorDays} day${this._dbErrorDays !== 1 ? 's' : ''}`;
+        } else if (!dbRows) {
+            // Fallback: filter live 30-min logs
+            errors      = this.logs.map(e => ({ e, c: this.classify(e) })).filter(r => r.c === 'error' || r.c === 'warn');
+            windowLabel = `${this.win || 30} minutes`;
+        } else {
+            // DB returned empty
+            errors      = [];
+            windowLabel = `${this._dbErrorDays} day${this._dbErrorDays !== 1 ? 's' : ''}`;
+        }
 
         if (dot)   dot.className = 'srv-logs-dot ' + (errors.some(r => r.c === 'error') ? 'err' : errors.length ? 'warn' : 'ok');
         if (count) count.textContent = errors.length ? `${errors.length}` : '';
 
         if (!errors.length) {
-            list.innerHTML = `<div class="error-empty">✓ No errors or warnings in the last ${this.win || 30} minutes.</div>`;
+            list.innerHTML = `<div class="error-empty">✓ No errors or warnings in the last ${windowLabel}.</div>`;
             return;
         }
 
-        list.innerHTML = errors.slice(0, 200).map(({ e, c }) => {
+        list.innerHTML = errors.slice(0, 500).map(({ e, c }) => {
             const ts = e.timestamp ? new Date(e.timestamp).toLocaleString() : '';
             return `<div class="error-item error-${c}">`
                  +    `<span class="rlog-badge rlog-badge-${c}">${c === 'error' ? 'ERR' : 'WARN'}</span>`
