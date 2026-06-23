@@ -1,6 +1,8 @@
 import os
 import json
-from datetime import datetime
+import requests as _requests
+from collections import Counter
+from datetime import datetime, timezone
 from backend.services.render_checker import RenderChecker
 from backend.services.email_service import EmailService
 from backend.database.csv_handler import CSVHandler
@@ -10,8 +12,26 @@ from backend.utils.logger import logger
 from backend.utils.helpers import get_current_timestamp, calculate_duration
 from backend.config.settings import settings
 
-# Deploy restarts on Render take ~30–90s. Only log/alert after this grace period.
+# Deploy restarts on Render take ~30–90s. Grace period prevents spurious event log entries.
+# Email is still sent immediately on first down detection (user preference).
 GRACE_PERIOD_MINUTES = 2
+
+# Error spike alerting
+ERROR_SPIKE_THRESHOLD  = 5     # alert when an error pattern appears this many times in recent logs
+ERROR_COOLDOWN_SECONDS = 3600  # minimum gap between repeat alerts for the same pattern
+
+# AI backend service key → display name (matches dashboard.js DEFAULT_SERVICES)
+_AI_SERVICE_NAMES = {
+    'ai_features':    'Gemini AI',
+    'groq_agents':    'Gemini AI',
+    'ai_image_search':'Gemini AI',
+    'core_api':       'Core API',
+    'voice_agent':    'Voice Agent',
+    'ai_maps':        'Google Maps',
+    'file_extractor': 'File Extractor',
+    'payment_chatbot':'Database',
+}
+AI_CHECK_INTERVAL_SECONDS = 300   # poll AI backend health at most once per 5 min
 
 
 class MonitorService:
@@ -28,6 +48,11 @@ class MonitorService:
         self.csv_handler    = CSVHandler(settings.CSV_FILE_PATH)
         self.db             = SupabaseHandler(settings.SUPABASE_URL, settings.SUPABASE_KEY)
         self.current_state  = self._load_state()
+        # Error spike tracking — reset on restart, that's fine
+        self._error_tracker: dict = {}      # pattern -> {alerted, alerted_at, readable}
+        # AI service health tracking
+        self._ai_service_states: dict = {}  # service key -> last known 'up'/'down'
+        self._last_ai_check_time = None
 
     # ── State persistence ────────────────────────────────────────────────────
 
@@ -99,8 +124,12 @@ class MonitorService:
             downtime_add = 1.0 if not is_running else 0.0
             self.db.upsert_daily(today, is_running, downtime_add)
 
-            # Store error/warn log lines; also purge old DB records (once per day)
-            self._store_error_logs()
+            # Store all log lines; check for recurring error spikes; check AI service health
+            recent_logs = self.render_checker.fetch_recent()    # uses cache — cheap single call for health check
+            new_logs    = self.render_checker.fetch_since(2)   # last 2 min, paginated — catches every new line
+            self._store_logs(new_logs)
+            self._check_recurring_errors(new_logs)
+            self._check_ai_services()
             self.db.purge_old_records()
 
             previous_running  = self.current_state['is_running']
@@ -129,21 +158,109 @@ class MonitorService:
             self.current_state['last_check_time'] = current_time
             return (False, self.current_state.get('last_status', 'UNKNOWN'))
 
-    def _store_error_logs(self):
-        """Store all log lines from the last Render fetch (deduped by id, 30-day retention)."""
-        if not self.db.is_available():
+    def _store_logs(self, logs: list) -> None:
+        """Store all log lines to Supabase (deduped by id, 30-day retention)."""
+        if not self.db.is_available() or not logs:
             return
         try:
-            logs = self.render_checker.fetch_recent()   # uses cache — no extra API call
-            if logs:
-                self.db.add_logs(logs)
+            self.db.add_logs(logs)
         except Exception as exc:
             logger.error(f"Failed to store logs: {exc}")
+
+    def _check_recurring_errors(self, logs: list) -> None:
+        """Count error patterns in recent logs; alert when any exceeds threshold; recover when it drops."""
+        if not logs:
+            return
+
+        now = datetime.now(timezone.utc)
+        counts: Counter = Counter()
+        samples: dict = {}
+
+        for entry in logs:
+            level = (entry.get('level') or '').lower()
+            if level not in ('error', 'critical', 'warning', 'warn'):
+                continue
+            msg = (entry.get('message') or '').strip()
+            if not msg:
+                continue
+            key = msg[:50].lower().strip()
+            counts[key] += 1
+            if key not in samples:
+                samples[key] = msg
+
+        # Recovery: patterns that were alerting but are now below threshold
+        for pattern in list(self._error_tracker.keys()):
+            state = self._error_tracker[pattern]
+            if state.get('alerted') and counts.get(pattern, 0) < ERROR_SPIKE_THRESHOLD:
+                readable = state.get('readable', pattern)
+                if self.email_service.send_error_spike_recovered(readable):
+                    logger.info(f"Error spike recovered: {pattern[:50]}")
+                state['alerted'] = False
+
+        # Alert: patterns now above threshold
+        for pattern, count in counts.items():
+            if count < ERROR_SPIKE_THRESHOLD:
+                continue
+            state = self._error_tracker.setdefault(
+                pattern, {'alerted': False, 'alerted_at': None, 'readable': ''}
+            )
+            state['readable'] = samples.get(pattern, pattern)
+
+            alerted_at = state.get('alerted_at')
+            cooldown_ok = not alerted_at or (now - alerted_at).total_seconds() >= ERROR_COOLDOWN_SECONDS
+
+            if not state['alerted'] or cooldown_ok:
+                if self.email_service.send_error_spike_alert(pattern, count, state['readable']):
+                    logger.info(f"Error spike alert sent: {pattern[:50]} × {count}")
+                state['alerted']    = True
+                state['alerted_at'] = now
+
+    def _check_ai_services(self) -> None:
+        """Poll AI backend service health; send recovery emails when services come back up."""
+        if not settings.AI_BACKEND_URL:
+            return
+
+        now = datetime.now(timezone.utc)
+        if self._last_ai_check_time and \
+                (now - self._last_ai_check_time).total_seconds() < AI_CHECK_INTERVAL_SECONDS:
+            return
+
+        try:
+            res = _requests.get(
+                f"{settings.AI_BACKEND_URL}/api/health/services", timeout=10
+            )
+            res.raise_for_status()
+            services = res.json().get('data') or {}
+            if not isinstance(services, dict):
+                return
+
+            recovery_notified: set = set()
+
+            for key, info in services.items():
+                if not isinstance(info, dict):
+                    continue
+                status = (info.get('status') or '').lower()
+                prev   = self._ai_service_states.get(key)
+
+                # Transition down → up: send recovery email (dedupe by display name)
+                if prev == 'down' and status == 'up':
+                    display = _AI_SERVICE_NAMES.get(key, key.replace('_', ' ').title())
+                    if display not in recovery_notified:
+                        if self.email_service.send_ai_service_recovered(display):
+                            logger.info(f"AI service recovered: {display} ({key})")
+                        recovery_notified.add(display)
+
+                if status in ('up', 'down'):
+                    self._ai_service_states[key] = status
+
+            self._last_ai_check_time = now
+        except Exception as exc:
+            logger.debug(f"AI services health check skipped: {exc}")
 
     def _start_grace_period(self, service_name, failure_time, issue_type):
         logger.warning(
             f"Service DOWN at {failure_time} — grace period started "
-            f"({GRACE_PERIOD_MINUTES}m before logging)"
+            f"({GRACE_PERIOD_MINUTES}m before event logging)"
         )
         self.current_state.update({
             'is_running':          False,
@@ -155,6 +272,10 @@ class MonitorService:
             'email_alert_sent':    False,
             'recovery_email_sent': False,
         })
+        # Send immediately on first detection — don't wait for grace period
+        if self.email_service.send_service_down_alert(service_name, failure_time, issue_type):
+            self.current_state['email_alert_sent'] = True
+            logger.info("Down alert email sent immediately on first detection")
         self._save_state()
         return (False, 'FAILED')
 
@@ -211,9 +332,12 @@ class MonitorService:
         failure_confirmed = self.current_state.get('failure_confirmed', True)
 
         if not failure_confirmed:
+            email_was_sent = self.current_state.get('email_alert_sent', False)
+            failure_start  = self.current_state.get('failure_start_time')
+            downtime       = calculate_duration(failure_start, recovery_time) if failure_start else 0
             logger.info(
-                "Service recovered within grace period — "
-                "treating as deploy restart, no log or email"
+                f"Service recovered within grace period — "
+                f"{'sending recovery email (down alert was sent)' if email_was_sent else 'no emails (no down alert was sent)'}"
             )
             self.current_state.update({
                 'is_running':          True,
@@ -222,8 +346,12 @@ class MonitorService:
                 'failure_start_time':  None,
                 'failure_confirmed':   True,
                 'email_alert_sent':    False,
-                'recovery_email_sent': False,
+                'recovery_email_sent': email_was_sent,
             })
+            if email_was_sent:
+                # Pair the immediate down alert with a recovery email
+                if self.email_service.send_service_recovered_alert(service_name, recovery_time, downtime):
+                    logger.info("Recovery alert email sent (grace period recovery)")
             self._save_state()
             return (False, 'RUNNING')
 

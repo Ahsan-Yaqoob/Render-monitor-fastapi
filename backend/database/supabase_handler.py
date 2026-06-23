@@ -24,7 +24,8 @@ except ImportError:
 _STATE_ROW_ID = 1          # monitor_state always has exactly one row
 _EVENTS_DAYS  = 30         # purge events older than this
 _DAILY_DAYS   = 90         # purge daily rows older than this
-_LOGS_DAYS    = 30         # purge log lines older than this (errors visible 30 days)
+_LOGS_DAYS       = 4       # purge regular (info) log lines older than 4 days
+_ERROR_LOGS_DAYS = 30      # keep error/warning log lines for 30 days
 
 _purge_done_for: str = ''  # date string — run purge at most once per day
 
@@ -254,19 +255,32 @@ class SupabaseHandler:
         except Exception as exc:
             logger.error(f"DB add_logs: {exc}")
 
-    def get_logs(self, days: int = 4, limit: int = 5000) -> list[dict]:
+    def _paginate_logs(self, query_fn, limit: int = 10000) -> list[dict]:
+        """Fetch rows in pages of 1000 to work around Supabase's max_rows cap."""
+        all_rows: list = []
+        page = 1000
+        offset = 0
+        while len(all_rows) < limit:
+            fetch = min(page, limit - len(all_rows))
+            res = query_fn(offset, offset + fetch - 1).execute()
+            rows = res.data or []
+            all_rows.extend(rows)
+            if len(rows) < fetch:
+                break
+            offset += fetch
+        return all_rows
+
+    def get_logs(self, days: int = 4, limit: int = 10000) -> list[dict]:
         """Return all stored log lines for the last N days (for the live log history view)."""
         if not self._client:
             return []
         try:
             cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-            res = (self._client.table('monitor_logs')
-                   .select('*')
-                   .gte('timestamp', cutoff)
-                   .order('timestamp', desc=True)
-                   .limit(limit)
-                   .execute())
-            return res.data or []
+            base = (self._client.table('monitor_logs')
+                    .select('*')
+                    .gte('timestamp', cutoff)
+                    .order('timestamp', desc=True))
+            return self._paginate_logs(lambda s, e: base.range(s, e), limit)
         except Exception as exc:
             logger.error(f"DB get_logs: {exc}")
             return []
@@ -277,14 +291,12 @@ class SupabaseHandler:
             return []
         try:
             cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-            res = (self._client.table('monitor_logs')
-                   .select('*')
-                   .gte('timestamp', cutoff)
-                   .in_('level', ['error', 'critical', 'warning', 'warn'])
-                   .order('timestamp', desc=True)
-                   .limit(limit)
-                   .execute())
-            return res.data or []
+            base = (self._client.table('monitor_logs')
+                    .select('*')
+                    .gte('timestamp', cutoff)
+                    .in_('level', ['error', 'critical', 'warning', 'warn'])
+                    .order('timestamp', desc=True))
+            return self._paginate_logs(lambda s, e: base.range(s, e), limit)
         except Exception as exc:
             logger.error(f"DB get_error_logs: {exc}")
             return []
@@ -301,8 +313,18 @@ class SupabaseHandler:
         if not self._client:
             return
         try:
-            cutoff = (datetime.now(timezone.utc) - timedelta(days=_LOGS_DAYS)).isoformat()
-            self._client.table('monitor_logs').delete().lt('timestamp', cutoff).execute()
+            cutoff_all    = (datetime.now(timezone.utc) - timedelta(days=_LOGS_DAYS)).isoformat()
+            cutoff_errors = (datetime.now(timezone.utc) - timedelta(days=_ERROR_LOGS_DAYS)).isoformat()
+            # Delete regular (info) logs older than 4 days
+            (self._client.table('monitor_logs').delete()
+                .lt('timestamp', cutoff_all)
+                .not_.in_('level', ['error', 'critical', 'warning', 'warn'])
+                .execute())
+            # Delete error/warning logs older than 30 days
+            (self._client.table('monitor_logs').delete()
+                .lt('timestamp', cutoff_errors)
+                .in_('level', ['error', 'critical', 'warning', 'warn'])
+                .execute())
         except Exception as exc:
             logger.error(f"DB purge_old_logs: {exc}")
 

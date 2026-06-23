@@ -383,7 +383,7 @@ main { padding: 32px 0 60px; }
     min-width: 0;
     border-radius: 3px;
     transition: opacity 0.12s, transform 0.12s;
-    cursor: crosshair;
+    cursor: default;
 }
 
 .uptime-bar:hover {

@@ -163,6 +163,132 @@ Render Monitor
             logger.error(f"Error sending recovery alert: {str(e)}")
             return False
     
+    def send_error_spike_alert(self, error_pattern: str, count: int, sample: str) -> bool:
+        """Send alert when a recurring error exceeds the spike threshold."""
+        try:
+            subject = f"⚠️ Recurring Error ({count}x): {error_pattern[:60]}"
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+            body = f"""Recurring Error Alert
+
+Pattern:    {error_pattern[:120]}
+Count:      {count}x in recent logs
+Sample:     {sample[:200]}
+Alert Time: {timestamp}
+
+This error has appeared {count} or more times recently. Please investigate.
+
+---
+Render Monitor""".strip()
+
+            html_body = f"""
+            <html>
+              <body style="font-family: Arial, sans-serif; color: #333;">
+                <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 5px;">
+                  <h2 style="color: #f57c00;">⚠️ Recurring Error Detected</h2>
+                  <table style="width:100%;border-collapse:collapse;">
+                    <tr><td style="padding:6px 0;color:#666;width:120px;">Pattern</td><td style="padding:6px 0;font-weight:600;">{error_pattern[:120]}</td></tr>
+                    <tr><td style="padding:6px 0;color:#666;">Occurrences</td><td style="padding:6px 0;font-weight:600;color:#d32f2f;">{count}× in recent logs</td></tr>
+                    <tr><td style="padding:6px 0;color:#666;vertical-align:top;">Sample</td><td style="padding:6px 0;"><code style="background:#f5f5f5;padding:4px 8px;border-radius:3px;font-size:12px;word-break:break-all;">{sample[:200]}</code></td></tr>
+                    <tr><td style="padding:6px 0;color:#666;">Alert Time</td><td style="padding:6px 0;">{timestamp}</td></tr>
+                  </table>
+                  <p style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #ddd; font-size: 12px; color: #666;">
+                    Check the Errors &amp; Warnings section in your dashboard for full details.
+                  </p>
+                  <p style="font-size: 12px; color: #999;">Render Monitor</p>
+                </div>
+              </body>
+            </html>"""
+
+            return self.send_email(subject, body, html_body)
+        except Exception as e:
+            logger.error(f"Error sending spike alert: {e}")
+            return False
+
+    def send_error_spike_recovered(self, error_pattern: str) -> bool:
+        """Send notification when a previously spiking error drops below threshold."""
+        try:
+            subject = f"🟢 Error Resolved: {error_pattern[:70]}"
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+            body = f"""Error Resolved
+
+Pattern:     {error_pattern[:120]}
+Status:      Resolved — no longer appearing frequently
+Resolved At: {timestamp}
+
+The recurring error is now below the alert threshold.
+
+---
+Render Monitor""".strip()
+
+            html_body = f"""
+            <html>
+              <body style="font-family: Arial, sans-serif; color: #333;">
+                <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 5px;">
+                  <h2 style="color: #388e3c;">🟢 Recurring Error Resolved</h2>
+                  <p><strong>Pattern:</strong> {error_pattern[:120]}</p>
+                  <p><strong>Status:</strong> <span style="color: #388e3c; font-weight: bold;">Resolved</span> — no longer appearing frequently</p>
+                  <p><strong>Resolved At:</strong> {timestamp}</p>
+                  <p style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #ddd;">
+                    The recurring error is now below the alert threshold. ✓
+                  </p>
+                  <p style="font-size: 12px; color: #999;">Render Monitor</p>
+                </div>
+              </body>
+            </html>"""
+
+            return self.send_email(subject, body, html_body)
+        except Exception as e:
+            logger.error(f"Error sending spike recovery: {e}")
+            return False
+
+    def send_ai_service_recovered(self, service_name: str) -> bool:
+        """Send notification when an AI service (e.g. Gemini) comes back operational."""
+        try:
+            subject = f"🟢 {service_name} is Operational"
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+            body = f"""Service Recovery
+
+Service:      {service_name}
+Status:       Operational
+Recovered At: {timestamp}
+
+{service_name} is back online and responding normally.
+
+---
+Render Monitor""".strip()
+
+            html_body = f"""
+            <html>
+              <body style="font-family: Arial, sans-serif; color: #333;">
+                <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 5px;">
+                  <h2 style="color: #388e3c;">🟢 {service_name} is Operational</h2>
+                  <p><strong>Service:</strong> {service_name}</p>
+                  <p><strong>Status:</strong> <span style="color: #388e3c; font-weight: bold;">Operational</span></p>
+                  <p><strong>Recovered At:</strong> {timestamp}</p>
+                  <p style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #ddd;">
+                    {service_name} is back online and responding normally. ✓
+                  </p>
+                  <p style="font-size: 12px; color: #999;">Render Monitor</p>
+                </div>
+              </body>
+            </html>"""
+
+            email_key = f"AI_RECOVERED_{service_name}"
+            if email_key in self.sent_emails:
+                if (datetime.now() - self.sent_emails[email_key]).total_seconds() < 300:
+                    return False
+
+            result = self.send_email(subject, body, html_body)
+            if result:
+                self.sent_emails[email_key] = datetime.now()
+            return result
+        except Exception as e:
+            logger.error(f"Error sending AI service recovery: {e}")
+            return False
+
     def test_email_connection(self):
         """Test email connection with credentials."""
         try:

@@ -1,4 +1,4 @@
-import os
+
 import datetime
 import requests
 import time as _time
@@ -6,22 +6,12 @@ from backend.config.settings import settings
 from backend.utils.logger import logger
 from backend.database.models import IssueType
 
-# Windowed-log cache — feeds the /api/render-logs DISPLAY (paginated, expensive).
-_LOG_CACHE: list = []
-_LOG_CACHE_TS: float = 0.0
-_LOG_CACHE_TTL: int = 60    # seconds — longer cache keeps us well under Render's rate limit
-
-# Recent-log cache — feeds the HEALTH CHECK (single call, cheap). The health check only
-# needs the latest lines to judge liveness, so it never paginates the whole window.
+# Recent-log cache — feeds the HEALTH CHECK (single call, cheap).
 _RECENT_CACHE: list = []
 _RECENT_CACHE_TS: float = 0.0
 _RECENT_CACHE_TTL: int = 25  # seconds — dedupes scheduler + manual checks
 _RECENT_LIMIT: int = 100     # newest N lines (Render caps a single request at 100)
 
-# We fetch a fixed TIME WINDOW (not a fixed line count) for the display so the span shown
-# stays consistent: a quiet 30 minutes and a busy 30 minutes look the same on the dashboard.
-# Tunable via the LOG_WINDOW_MINUTES env var.
-_LOG_WINDOW_MINUTES: int = int(os.getenv("LOG_WINDOW_MINUTES", "30"))
 _LOG_PAGE_SIZE: int = 100    # Render caps /v1/logs at 100 entries per request
 _LOG_MAX_PAGES: int = 12     # safety valve: at most 1200 lines per window fetch
 _LOG_PAGE_DELAY: float = 0.15  # seconds between paginated calls — avoids burst 429s
@@ -37,7 +27,6 @@ class RenderChecker:
         self.api_key    = settings.RENDER_API_KEY
         self.service_id = settings.MONITOR_SERVICE_ID
         self.api_url    = settings.RENDER_API_URL
-        self.log_window_minutes = _LOG_WINDOW_MINUTES
         self.headers    = {
             "Authorization": f"Bearer {self.api_key}",
             "Accept":        "application/json",
@@ -67,37 +56,27 @@ class RenderChecker:
             "message":   entry.get("message", ""),
         }
 
-    def fetch_logs(self, force: bool = False) -> list:
+    def fetch_since(self, minutes: int = 2) -> list:
         """
-        Fetch every log line from the last _LOG_WINDOW_MINUTES minutes via Render's
-        /v1/logs endpoint, paginating as needed. Cached for _LOG_CACHE_TTL seconds.
-
-        Fetching a fixed TIME WINDOW instead of a fixed line count keeps the displayed
-        span consistent — a busy period and a quiet period both show the same N minutes,
-        rather than the old behaviour where 200 lines could be 5 minutes or over an hour.
-
-        Returns normalized entries, newest first. Empty list on failure.
+        Fetch all log lines produced in the last N minutes, paginated.
+        Used by the scheduler for storage — small window, no shared cache.
+        With a 1-minute scheduler cadence and minutes=2, consecutive calls
+        overlap by 1 minute so no line is ever missed.
         """
-        global _LOG_CACHE, _LOG_CACHE_TS
-
-        if not force and _LOG_CACHE and (_time.monotonic() - _LOG_CACHE_TS) < _LOG_CACHE_TTL:
-            return _LOG_CACHE
-
         owner = self._get_owner_id()
         if not owner:
-            logger.warning("Could not resolve Render ownerId — cannot fetch logs")
-            return _LOG_CACHE
+            return []
 
-        now = datetime.datetime.now(datetime.timezone.utc)
-        start_time = (now - datetime.timedelta(minutes=_LOG_WINDOW_MINUTES)).isoformat()
-        end_time = now.isoformat()
+        now        = datetime.datetime.now(datetime.timezone.utc)
+        start_time = (now - datetime.timedelta(minutes=minutes)).isoformat()
+        end_time   = now.isoformat()
 
         collected: list = []
         seen: set = set()
         try:
             for i in range(_LOG_MAX_PAGES):
                 if i > 0:
-                    _time.sleep(_LOG_PAGE_DELAY)  # spread calls so a burst doesn't trip 429
+                    _time.sleep(_LOG_PAGE_DELAY)
                 r = requests.get(
                     f"{self.api_url}/logs",
                     headers=self.headers,
@@ -111,36 +90,30 @@ class RenderChecker:
                     timeout=15,
                 )
                 if r.status_code == 429:
-                    # Rate-limited — keep the last good window rather than erroring out.
-                    logger.warning("Render logs API rate-limited (429) — serving cached logs")
-                    return _LOG_CACHE or collected
+                    logger.warning("Render logs API rate-limited (429) — skipping storage fetch")
+                    return collected
                 r.raise_for_status()
                 data = r.json()
-                page = data.get("logs") or []   # key may be present but null
+                page = data.get("logs") or []
 
                 for entry in page:
                     norm = self._normalize(entry)
-                    # Page boundaries can repeat an entry — dedupe by id (or ts+message).
-                    key = norm.get("id") or (norm.get("timestamp"), norm.get("message"))
+                    key  = norm.get("id") or (norm.get("timestamp"), norm.get("message"))
                     if key in seen:
                         continue
                     seen.add(key)
                     collected.append(norm)
 
-                # Walk further back within the window (endTime moves toward start_time).
                 next_end = data.get("nextEndTime")
                 if not data.get("hasMore") or not page or not next_end or next_end == end_time:
                     break
                 end_time = next_end
 
             collected.sort(key=lambda e: e.get("timestamp") or "", reverse=True)
-            _LOG_CACHE    = collected
-            _LOG_CACHE_TS = _time.monotonic()
-            logger.info(f"Fetched {len(collected)} log lines from Render (last {_LOG_WINDOW_MINUTES}m)")
             return collected
         except Exception as e:
-            logger.error(f"Failed to fetch Render logs: {e}")
-            return _LOG_CACHE   # return stale cache rather than crashing
+            logger.error(f"Failed to fetch logs (last {minutes}m): {e}")
+            return []
 
     def fetch_recent(self, limit: int = _RECENT_LIMIT) -> list:
         """

@@ -1,19 +1,15 @@
 // ── Logs page ───────────────────────────────────────────────────────────────
-// Dedicated page for the live Render server logs + an errors list + outage history.
-// The viewer structure lives in logs.html and persists, so refreshes update the
-// content in place (no flash) and the log tail can stick to the bottom.
+// Dedicated page for server logs (4-day history from Supabase) + errors list + outage history.
 
 class LogsPage {
     constructor() {
-        this.logs        = [];    // merged log entries: DB 4-day history + live Render window
-        this.win         = null;  // window minutes reported by the backend
+        this.logs        = [];    // log entries from Supabase (last 4 days)
         this.err         = null;  // fetch error message, if any
         this.filter      = 'all';
         this.search      = '';
         this.stick       = true;  // follow newest line at the bottom
         this.scroll      = null;
         this.isLoading   = false;
-        this._hasDBHistory = false;   // true when DB returned 4-day log history
         this._dbErrorLogs  = null;    // stored error/warn lines from Supabase (30 days), or null
         this._dbErrorDays  = 30;
         this.init();
@@ -24,7 +20,7 @@ class LogsPage {
         this.box = document.getElementById('slogBox');
         this.setupEvents();
         this.loadAll();
-        setInterval(() => this.loadAll(), 30000);
+        setInterval(() => this.loadAll(), 61000);
     }
 
     // ── Theme ─────────────────────────────────────────────────────────────────
@@ -90,39 +86,16 @@ class LogsPage {
     }
 
     async loadLogs() {
-        // Load DB 4-day history and live Render window in parallel
-        const [dbRes, liveRes] = await Promise.allSettled([
-            api.getLogHistory(4),
-            api.getRenderLogs()
-        ]);
-
-        const dbLogs   = (dbRes.status === 'fulfilled'   && dbRes.value?.success)   ? (dbRes.value.data   || []) : [];
-        const liveLogs = (liveRes.status === 'fulfilled' && liveRes.value?.success) ? (liveRes.value.data || []) : [];
-
-        this._hasDBHistory = dbLogs.length > 0;
-        this.win = liveRes.status === 'fulfilled' ? liveRes.value?.window_minutes : this.win;
-
-        const merged = this._mergeLogs(dbLogs, liveLogs);
-        if (merged.length || !this.logs.length) this.logs = merged;
-
-        if (!this.logs.length) {
-            this.err = liveRes.status === 'rejected' ? liveRes.reason?.message : null;
-        } else {
+        try {
+            const res  = await api.getLogHistory(4);
+            const logs = (res?.success) ? (res.data || []) : [];
+            if (logs.length || !this.logs.length) this.logs = logs;
             this.err = null;
+        } catch (e) {
+            this.err = e.message;
         }
-
         this.renderLogLines();
         this.renderErrorList(this._dbErrorLogs);
-    }
-
-    _mergeLogs(dbLogs, liveLogs) {
-        const seen = new Set();
-        const out  = [];
-        for (const e of [...dbLogs, ...liveLogs]) {
-            const key = e.id || `${e.timestamp}:${e.message}`;
-            if (!seen.has(key)) { seen.add(key); out.push(e); }
-        }
-        return out.sort((a, b) => a.timestamp < b.timestamp ? 1 : -1);
     }
 
     async loadErrorLogs() {
@@ -182,11 +155,9 @@ class LogsPage {
             if (stats) stats.innerHTML = '';
             return;
         }
-        if (sub) sub.textContent = this._hasDBHistory
-            ? `Render · last 4 days`
-            : `Render${this.win ? ' · last ' + this.win + ' min' : ''}`;
+        if (sub) sub.textContent = 'last 4 days';
         if (!this.logs.length) {
-            box.innerHTML = `<div class="rlog-placeholder">No logs returned from Render.</div>`;
+            box.innerHTML = `<div class="rlog-placeholder">No logs in database yet.</div>`;
             if (stats) stats.innerHTML = '';
             return;
         }
@@ -248,7 +219,7 @@ class LogsPage {
             windowLabel = `${this._dbErrorDays} days`;
         } else if (!dbRows) {
             errors      = this.logs.map(e => ({ e, c: this.classify(e) })).filter(r => r.c === 'error' || r.c === 'warn');
-            windowLabel = `${this.win || 30} minutes`;
+            windowLabel = `4 days`;
         } else {
             errors      = [];
             windowLabel = `${this._dbErrorDays} days`;

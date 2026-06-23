@@ -149,21 +149,6 @@ def get_services_health():
         return {'success': False, 'error': str(e), 'data': {}}
 
 
-@router.get("/render-logs")
-def get_render_logs(limit: int = Query(2000, ge=1, le=5000)):
-    """
-    Return live server logs for a fixed time window from Render's /v1/logs API.
-    """
-    checker = monitor_service.render_checker
-    logs = checker.fetch_logs()
-    return {
-        "success":        True,
-        "data":           logs[:limit],
-        "total":          len(logs),
-        "showing":        min(limit, len(logs)),
-        "window_minutes": checker.log_window_minutes,
-    }
-
 
 @router.get("/health")
 async def health_check():
