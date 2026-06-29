@@ -121,6 +121,29 @@ def get_error_logs(days: int = Query(30, ge=1, le=30)):
         return {'success': False, 'error': str(e), 'data': []}
 
 
+@router.get("/services/{service_id}/events")
+def get_service_events(service_id: str, days: int = Query(90, ge=1, le=365)):
+    """Return stored events (DEGRADED, FAILED, etc.) for a specific service card."""
+    try:
+        if not monitor_service.db.is_available():
+            return {'success': True, 'data': []}
+        events = monitor_service.db.get_service_events(service_id, days=days)
+        return {'success': True, 'data': events}
+    except Exception as e:
+        logger.error(f"Error getting service events for {service_id}: {e}")
+        return {'success': False, 'error': str(e), 'data': []}
+
+
+@router.get("/services/degraded")
+def get_degraded_services():
+    """Return the set of service keys currently degraded based on log error spikes."""
+    try:
+        degraded = list(monitor_service.degraded_services)
+        return {'success': True, 'data': degraded}
+    except Exception as e:
+        return {'success': False, 'error': str(e), 'data': []}
+
+
 @router.get("/services/health")
 def get_services_health():
     """

@@ -6,7 +6,7 @@ const DEFAULT_SERVICES = [
     { id: 'core_api',        name: 'Core API',       desc: 'Main FastAPI backend',                       category: 'Core' },
     // AI Features — the 3 Gemini-powered services share the same health check so they're one card
     { id: 'gemini_services', name: 'Gemini AI',      desc: 'Chatbot, text agents & image search',       category: 'AI Features',
-      group: ['ai_features', 'groq_agents', 'ai_image_search'] },
+      group: ['ai_features', 'groq_agents', 'ai_image_search'], ownHistory: true },
     { id: 'voice_agent',     name: 'Voice Agent',    desc: 'Browser Web Speech API (native)',            category: 'AI Features' },
     // Integrations
     { id: 'ai_maps',         name: 'Google Maps',    desc: 'Route & location search',                   category: 'Integrations' },
@@ -106,6 +106,13 @@ class StatusDashboard {
                 if (healthRes?.success) perServiceHealth = healthRes.data;
             } catch {}
 
+            // Services degraded by log error spikes (e.g. Gemini model fallbacks)
+            let degradedServices = [];
+            try {
+                const degRes = await api.getDegradedServices();
+                if (degRes?.success) degradedServices = degRes.data || [];
+            } catch {}
+
             // Build bars — prefer pre-computed daily data (Supabase), fall back to event-based
             const globalRecords = globalHistory?.data?.records || [];
             let sharedBars;
@@ -145,16 +152,35 @@ class StatusDashboard {
                     if (globalStatus?.data?.is_running === false) currentStatus = 'down';
                 }
 
+                // Override to 'degraded' if log spikes currently active for this service
+                if (currentStatus === 'up' && degradedServices.some(d => s.id.includes(d) || (s.group || []).some(g => g.includes(d)))) {
+                    currentStatus = 'degraded';
+                }
+
+                // Services with ownHistory get their own bars (DEGRADED events = yellow day bars)
+                let bars   = sharedBars;
+                let uptime = sharedUptime;
+                if (s.ownHistory) {
+                    try {
+                        const evRes = await api.getServiceEvents(s.id, 90);
+                        const evRows = evRes?.data || [];
+                        if (evRows.length) {
+                            bars   = this.buildBarsFromServiceEvents(evRows, sharedBars, 90);
+                            uptime = this.calcUptime(bars);
+                        }
+                    } catch {}
+                }
+
                 this.statusData[s.id] = {
                     currentStatus,
                     healthDetail,
-                    bars:    sharedBars,
-                    uptime:  sharedUptime,
+                    bars,
+                    uptime,
                     records: globalRecords,
                 };
             }
 
-            this.renderOverallBanner(globalStatus, perServiceHealth);
+            this.renderOverallBanner(globalStatus, perServiceHealth, degradedServices);
             this.renderServices();
             this.updateRefreshTime();
         } catch (err) {
@@ -253,6 +279,22 @@ class StatusDashboard {
         return bars;
     }
 
+    buildBarsFromServiceEvents(events, sharedBars, days = 90) {
+        // Start from sharedBars so all 90 days exist with correct nodata/up baseline.
+        // Then overlay: any day with a DEGRADED event becomes 'partial' (yellow).
+        const degradedDays = new Set(
+            events
+                .filter(e => e.status === 'DEGRADED')
+                .map(e => (e.timestamp || '').slice(0, 10))
+                .filter(Boolean)
+        );
+        return sharedBars.map(b => {
+            if (b.status === 'nodata') return b;
+            if (degradedDays.has(b.date)) return { ...b, status: 'partial' };
+            return b;
+        });
+    }
+
     calcUptime(bars) {
         const monitored = bars.filter(b => b.status !== 'nodata');
         if (!monitored.length) return null;
@@ -274,7 +316,7 @@ class StatusDashboard {
 
     // ── Render ────────────────────────────────────────────────────────────────
 
-    renderOverallBanner(globalStatus, perServiceHealth) {
+    renderOverallBanner(globalStatus, perServiceHealth, degradedServices = []) {
         const banner = document.getElementById('overallBanner');
         const icon   = document.getElementById('overallIcon');
         const title  = document.getElementById('overallTitle');
@@ -282,14 +324,16 @@ class StatusDashboard {
         const dot    = document.getElementById('brandDot');
 
         // Core service = the actual backend process. If it's down, everything is down.
-        const coreDown    = this.statusData['core_api']?.currentStatus === 'down';
-        const anyDown     = Object.values(this.statusData).some(d => d?.currentStatus === 'down');
-        const isPartial   = anyDown && !coreDown;  // some integrations down but core is up
+        const coreDown     = this.statusData['core_api']?.currentStatus === 'down';
+        const anyDown      = Object.values(this.statusData).some(d => d?.currentStatus === 'down');
+        const anyDegraded  = Object.values(this.statusData).some(d => d?.currentStatus === 'degraded');
+        const isPartial    = (anyDown && !coreDown) || anyDegraded;
 
         const bannerCls   = coreDown ? 'banner-down' : isPartial ? 'banner-warn' : 'banner-ok';
         const iconTxt     = coreDown ? '✗' : isPartial ? '!' : '✓';
-        const titleTxt    = coreDown   ? 'Service Outage Detected'
-                          : isPartial  ? 'Partial Outage — Some Services Degraded'
+        const titleTxt    = coreDown    ? 'Service Outage Detected'
+                          : anyDegraded && !anyDown ? 'Degraded Performance — Some AI Services Experiencing Errors'
+                          : isPartial   ? 'Partial Outage — Some Services Degraded'
                           : 'All Systems Operational';
 
         if (banner) {
@@ -344,11 +388,13 @@ class StatusDashboard {
         const data = this.statusData[id] || { currentStatus: 'unknown', bars: this.buildBars([]), uptime: null, healthDetail: null };
         const { currentStatus, bars, uptime, healthDetail } = data;
 
-        const badgeCls = currentStatus === 'up'   ? 'badge-ok'
-                       : currentStatus === 'down' ? 'badge-fail'
+        const badgeCls = currentStatus === 'up'       ? 'badge-ok'
+                       : currentStatus === 'down'     ? 'badge-fail'
+                       : currentStatus === 'degraded' ? 'badge-warn'
                        : 'badge-unknown';
-        const badgeTxt = currentStatus === 'up'   ? 'Operational'
-                       : currentStatus === 'down' ? 'Outage'
+        const badgeTxt = currentStatus === 'up'       ? 'Operational'
+                       : currentStatus === 'down'     ? 'Outage'
+                       : currentStatus === 'degraded' ? 'Degraded'
                        : 'Unknown';
 
         const barsHTML = bars.map(b => {

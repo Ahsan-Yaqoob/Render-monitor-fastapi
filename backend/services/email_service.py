@@ -289,6 +289,54 @@ Render Monitor""".strip()
             logger.error(f"Error sending AI service recovery: {e}")
             return False
 
+    def send_crash_detected_alert(self, crash_type: str, detail: str) -> bool:
+        """Send alert when a crash/OOM is detected in logs even if the service auto-recovered."""
+        try:
+            subject = f"🔴 Crash Detected: {crash_type}"
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+            body = f"""Crash / OOM Detected
+
+Type:       {crash_type}
+Detail:     {detail[:200]}
+Detected:   {timestamp}
+
+Render restarted the service automatically, but a crash occurred.
+Check memory usage and error logs for the root cause.
+
+---
+Render Monitor""".strip()
+
+            html_body = f"""
+            <html>
+              <body style="font-family: Arial, sans-serif; color: #333;">
+                <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 5px;">
+                  <h2 style="color: #d32f2f;">🔴 Crash / OOM Detected</h2>
+                  <table style="width:100%;border-collapse:collapse;">
+                    <tr><td style="padding:6px 0;color:#666;width:120px;">Type</td><td style="padding:6px 0;font-weight:600;color:#d32f2f;">{crash_type}</td></tr>
+                    <tr><td style="padding:6px 0;color:#666;vertical-align:top;">Detail</td><td style="padding:6px 0;"><code style="background:#f5f5f5;padding:4px 8px;border-radius:3px;font-size:12px;word-break:break-all;">{detail[:200]}</code></td></tr>
+                    <tr><td style="padding:6px 0;color:#666;">Detected At</td><td style="padding:6px 0;">{timestamp}</td></tr>
+                  </table>
+                  <p style="margin-top:16px;padding:12px;background:#fff3e0;border-left:4px solid #f57c00;border-radius:3px;font-size:13px;">
+                    Render restarted the service automatically. Check memory usage and logs for the root cause.
+                  </p>
+                  <p style="font-size: 12px; color: #999;">Render Monitor</p>
+                </div>
+              </body>
+            </html>"""
+
+            email_key = f"CRASH_{crash_type}_{timestamp[:13]}"  # dedupe per hour per type
+            if email_key in self.sent_emails:
+                return False
+
+            result = self.send_email(subject, body, html_body)
+            if result:
+                self.sent_emails[email_key] = datetime.now()
+            return result
+        except Exception as e:
+            logger.error(f"Error sending crash alert: {e}")
+            return False
+
     def test_email_connection(self):
         """Test email connection with credentials."""
         try:

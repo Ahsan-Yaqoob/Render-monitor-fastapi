@@ -32,6 +32,8 @@ class APIClient {
     getHistoryByDays(limit, days)   { return this.request(`/history?limit=${limit}&days=${days}`); }
     getDailyHistory(days = 90)      { return this.request(`/history/daily?days=${days}`); }
     getServicesHealth()             { return this.request('/services/health'); }
+    getDegradedServices()           { return this.request('/services/degraded'); }
+    getServiceEvents(serviceId, days = 90) { return this.request(`/services/${serviceId}/events?days=${days}`); }
     getLogHistory(days = 4)         { return this.request(`/logs/history?days=${days}`); }
     getErrorLogs(days = 30)         { return this.request(`/logs/errors?days=${days}`); }
     clearErrorLogs()                { return this.request('/logs/clear-errors', { method: 'POST' }); }

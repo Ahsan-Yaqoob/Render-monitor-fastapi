@@ -20,6 +20,21 @@ GRACE_PERIOD_MINUTES = 2
 ERROR_SPIKE_THRESHOLD  = 5     # alert when an error pattern appears this many times in recent logs
 ERROR_COOLDOWN_SECONDS = 3600  # minimum gap between repeat alerts for the same pattern
 
+# Crash / OOM detection — fires even when Render auto-recovers within 1 check cycle
+CRASH_COOLDOWN_SECONDS = 1800  # 30 min — avoids duplicate alerts for rapid OOM loops
+
+# Fatal patterns that indicate a real process crash (must match render_checker._FATAL)
+_CRASH_PATTERNS = [
+    ("out of memory",       "OOM"),
+    ("ran out of memory",   "OOM"),
+    ("killed",              "OOM"),
+    ("exited with status",  "Process Exit"),
+    ("exited with code",    "Process Exit"),
+    ("application startup failed", "Startup Failure"),
+    ("worker failed to boot",      "Startup Failure"),
+    ("worker failed or couldn't boot", "Startup Failure"),
+]
+
 # AI backend service key → display name (matches dashboard.js DEFAULT_SERVICES)
 _AI_SERVICE_NAMES = {
     'ai_features':    'Gemini AI',
@@ -50,6 +65,10 @@ class MonitorService:
         self.current_state  = self._load_state()
         # Error spike tracking — reset on restart, that's fine
         self._error_tracker: dict = {}      # pattern -> {alerted, alerted_at, readable}
+        # Crash detection cooldown — keyed by crash type ("OOM", "Process Exit", etc.)
+        self._crash_alerted_at: dict = {}   # crash_type -> datetime
+        # Services currently degraded based on log pattern spikes (for dashboard yellow bar)
+        self.degraded_services: set = set()  # e.g. {'gemini'}
         # AI service health tracking
         self._ai_service_states: dict = {}  # service key -> last known 'up'/'down'
         self._last_ai_check_time = None
@@ -129,6 +148,7 @@ class MonitorService:
             new_logs    = self.render_checker.fetch_since(2)   # last 2 min, paginated — catches every new line
             self._store_logs(new_logs)
             self._check_recurring_errors(new_logs)
+            self._check_crash_events(new_logs)
             self._check_ai_services()
             self.db.purge_old_records()
 
@@ -178,15 +198,39 @@ class MonitorService:
 
         for entry in logs:
             level = (entry.get('level') or '').lower()
-            if level not in ('error', 'critical', 'warning', 'warn'):
-                continue
             msg = (entry.get('message') or '').strip()
             if not msg:
                 continue
-            key = msg[:50].lower().strip()
+            msg_lower = msg.lower()
+
+            # Treat any log line that mentions an error/failure as countable,
+            # even if the level field says 'info' (app loggers vary).
+            is_error_line = (
+                level in ('error', 'critical', 'warning', 'warn')
+                or 'error' in msg_lower
+                or 'exception' in msg_lower
+                or 'failed' in msg_lower
+            )
+            if not is_error_line:
+                continue
+
+            # Normalize known grouped patterns so all variants count together.
+            if '[gemini]' in msg_lower and ('error' in msg_lower or 'failed' in msg_lower):
+                key = '[gemini] model error / fallback'
+                sample_msg = '[GEMINI] model errors (multiple models failing with fallbacks)'
+            elif '[prefill]' in msg_lower and 'error' in msg_lower:
+                key = '[prefill] generation error'
+                sample_msg = msg
+            elif '[gemini-ws]' in msg_lower and 'error' in msg_lower:
+                key = '[gemini-ws] websocket error'
+                sample_msg = msg
+            else:
+                key = msg_lower[:50].strip()
+                sample_msg = msg
+
             counts[key] += 1
             if key not in samples:
-                samples[key] = msg
+                samples[key] = sample_msg
 
         # Recovery: patterns that were alerting but are now below threshold
         for pattern in list(self._error_tracker.keys()):
@@ -196,6 +240,8 @@ class MonitorService:
                 if self.email_service.send_error_spike_recovered(readable):
                     logger.info(f"Error spike recovered: {pattern[:50]}")
                 state['alerted'] = False
+                if 'gemini' in pattern:
+                    self.degraded_services.discard('gemini')
 
         # Alert: patterns now above threshold
         for pattern, count in counts.items():
@@ -212,8 +258,57 @@ class MonitorService:
             if not state['alerted'] or cooldown_ok:
                 if self.email_service.send_error_spike_alert(pattern, count, state['readable']):
                     logger.info(f"Error spike alert sent: {pattern[:50]} × {count}")
+                # Store a DEGRADED event so the day bar stays yellow permanently
+                if 'gemini' in pattern and not state['alerted']:
+                    self._store_degraded_event('gemini_services', pattern, count)
                 state['alerted']    = True
                 state['alerted_at'] = now
+
+            # Track degraded state for dashboard yellow bar
+            if 'gemini' in pattern:
+                self.degraded_services.add('gemini')
+
+    def _store_degraded_event(self, service_id: str, pattern: str, count: int) -> None:
+        """Record a DEGRADED event for a service so its day bar stays yellow."""
+        if not self.db.is_available():
+            return
+        try:
+            ts = get_current_timestamp()
+            record = ServiceStatusRecord(
+                id=self.csv_handler.generate_unique_id(),
+                timestamp=ts,
+                service_name=service_id,
+                status='DEGRADED',
+                issue_type=pattern[:80],
+                duration=0,
+                resolved_at=None,
+            )
+            self.db.add_event(record)
+            logger.info(f"Stored DEGRADED event for {service_id}: {pattern[:50]} × {count}")
+        except Exception as exc:
+            logger.error(f"Failed to store degraded event: {exc}")
+
+    def _check_crash_events(self, logs: list) -> None:
+        """
+        Scan fetched logs for crash/OOM signals and send an alert even when Render
+        already auto-recovered (fast restart means analyse_logs() sees UP, not DOWN).
+        """
+        if not logs:
+            return
+        now = datetime.now(timezone.utc)
+        for entry in logs:
+            msg = (entry.get('message') or '').lower()
+            for phrase, crash_type in _CRASH_PATTERNS:
+                if phrase not in msg:
+                    continue
+                last = self._crash_alerted_at.get(crash_type)
+                if last and (now - last).total_seconds() < CRASH_COOLDOWN_SECONDS:
+                    break  # cooldown active for this crash type
+                detail = entry.get('message', '')[:200]
+                if self.email_service.send_crash_detected_alert(crash_type, detail):
+                    logger.warning(f"Crash alert sent: {crash_type} — {detail[:80]}")
+                self._crash_alerted_at[crash_type] = now
+                break  # one alert per log entry
 
     def _check_ai_services(self) -> None:
         """Poll AI backend service health; send recovery emails when services come back up."""

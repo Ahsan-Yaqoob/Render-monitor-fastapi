@@ -151,6 +151,23 @@ class SupabaseHandler:
             logger.error(f"DB get_events: {exc}")
             return []
 
+    def get_service_events(self, service_name: str, days: int = 90) -> list[dict]:
+        """Return events for a specific service (e.g. DEGRADED events for gemini_services)."""
+        if not self._client:
+            return []
+        try:
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+            res = (self._client.table('monitor_events')
+                   .select('*')
+                   .eq('service_name', service_name)
+                   .gte('timestamp', cutoff)
+                   .order('timestamp', desc=True)
+                   .execute())
+            return res.data or []
+        except Exception as exc:
+            logger.error(f"DB get_service_events({service_name}): {exc}")
+            return []
+
     def clear_events(self) -> None:
         if not self._client:
             return
